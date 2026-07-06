@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
+.venv-win/
 venv/
 
 # 专用 Chrome 用户数据——内含 ChatGPT 登录会话，绝不提交

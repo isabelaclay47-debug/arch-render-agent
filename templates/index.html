@@ -308,7 +308,24 @@
       </div>
     </div>
 
-    <!-- 点评（每 5 轮出现） -->
+    <!-- 确认关卡：AI 讲解理解 + 可编辑中文提示词（生图前，不消耗额度） -->
+    <div class="card" id="confirmCard" style="display:none">
+      <b>🧭 先确认我的理解对不对 <small style="color:var(--taupe);font-weight:400">— 确认后才开始生图，不消耗额度</small></b>
+      <div style="font-size:12px;color:var(--taupe);margin:8px 0 4px">我理解你的意思是：</div>
+      <div id="understanding" style="font-size:13px;line-height:1.7;color:var(--ink);
+           background:#fff;border:1px solid var(--line);border-radius:6px;padding:10px 12px;
+           white-space:pre-wrap"></div>
+      <label style="margin-top:12px">中文提示词（可直接改，改完点右边按钮让 AI 同步）</label>
+      <textarea id="promptZh" style="min-height:140px"></textarea>
+      <textarea id="confirmNote" style="min-height:52px;margin-top:8px"
+        placeholder="可选：有理解偏差就写一句，例如「其实我要正午硬光不是黄昏」「别加行人」。"></textarea>
+      <div class="row">
+        <button class="btn-green" onclick="confirmPrompt(false)">就用这份，开始生图</button>
+        <button class="btn-blue" onclick="confirmPrompt(true)">让 AI 按我的修改再调整</button>
+      </div>
+    </div>
+
+    <!-- 点评（每几轮出现） -->
     <div class="card" id="fbCard" style="display:none">
       <b>⏸ 请点评这一批过程图</b>
       <div style="font-size:12px;color:var(--taupe);margin-top:6px">
@@ -349,14 +366,19 @@
     <div class="editor-tools">
       <b>🖌 局部修改</b>
       <span style="flex:1"></span>
-      <button class="tool active" id="toolBrush" onclick="setTool('brush')">画笔圈选</button>
+      <button class="tool active" id="toolBrush" onclick="setTool('brush')">手画</button>
+      <button class="tool" id="toolLine" onclick="setTool('line')">直线</button>
       <button class="tool" id="toolRect" onclick="setTool('rect')">框选</button>
+      <button class="tool" id="toolPoly" onclick="setTool('poly')">多边形套索</button>
+      <button class="tool" id="toolSmear" onclick="setTool('smear')">涂抹</button>
+      <button class="tool" id="toolEraser" onclick="setTool('eraser')">橡皮擦</button>
       <button class="tool" onclick="undoStroke()">撤销</button>
       <button class="tool" onclick="clearStrokes()">清空</button>
       <button class="tool" onclick="closeEditor()">关闭</button>
     </div>
     <canvas id="editCanvas"></canvas>
-    <div class="editor-hint">用红色标出<b>唯一允许修改</b>的区域——AI 将被严格要求不动区域外的任何内容</div>
+    <div class="editor-hint">用红色标出<b>唯一允许修改</b>的区域——AI 将被严格要求不动区域外的任何内容。<br>
+      手画/涂抹：按住拖动 · 直线：点起点再点终点 · 框选：拖出矩形 · 多边形套索：连续点、<b>双击闭合</b> · 橡皮擦：拖过要删掉的标记</div>
     <textarea id="editInstruction" placeholder="这个区域要怎么改？例如：把入口雨棚改成木格栅材质 / 去掉这个人 / 这块墙面换成清水混凝土"></textarea>
     <div class="row">
       <button class="btn-blue" style="flex:1" onclick="submitEdit()">提交局部修改（只改圈出的部分）</button>
@@ -366,11 +388,22 @@
 
 <script>
 const stateNames = { idle:"未开始", connecting:"连接 Chrome 中…", running:"迭代运行中",
+                     waiting_confirm:"等你确认提示词",
                      waiting_clarification:"AI 有疑问，等你回答",
                      waiting_feedback:"等待你的点评", editing:"局部修改中",
                      done:"已完成", error:"出错" };
-let sessId = null, rendered = 0, curState = "idle";
+let sessId = null, rendered = 0, curState = "idle", confirmLoaded = false, latestItems = [];
 const $ = id => document.getElementById(id);
+
+// #5：把某轮的 AI 评价（结论+篡改检查明细）一键填入点评框，省去手动复制
+function fillFeedback(idx) {
+  const it = latestItems[idx]; if (!it) return;
+  const txt = ((it.verdict ? it.verdict + "\n" : "") + (it.analysis || "")).trim();
+  const ta = $("fbText");
+  ta.value = ta.value.trim() ? ta.value.trim() + "\n———\n" + txt : txt;
+  ta.focus();
+  ta.scrollIntoView({ behavior: "smooth", block: "center" });
+}
 
 const PROMPT_LIBRARY = [
   { cat:"图纸", name:"总平竞赛图", text:"总平面图表达：白底竞赛图风格，清晰表达用地边界、建筑轮廓、道路系统、人行流线、景观分区、入口节点、北向与比例感；线宽层级明确，淡彩功能分区，标签清晰可读。" },
@@ -522,6 +555,17 @@ async function sendClarify() {
   $("clarifyCard").style.display = "none";
 }
 
+async function confirmPrompt(adjust) {
+  const j = await (await fetch("/api/confirm_prompt", { method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ adjust,
+                           edited_zh: $("promptZh").value,
+                           note: $("confirmNote").value }) })).json();
+  if (!j.ok) { alert(j.msg); return; }
+  confirmLoaded = false;                 // 允许下一版重新填充
+  $("confirmCard").style.display = "none";
+}
+
 async function finishNow() {
   if (!confirm("确定提前结束吗？将把当前最新一张图输出到桌面。")) return;
   await fetch("/api/finish_now", { method: "POST" });
@@ -549,9 +593,9 @@ function zoom(src) { $("lightboxImg").src = src; $("lightbox").style.display = "
 async function poll() {
   try {
     const s = await apiJson("/api/status");
-    sessId = s.session_id; curState = s.state;
+    sessId = s.session_id; curState = s.state; latestItems = s.items;
     $("dot").className = "pulse " +
-      (["waiting_feedback","waiting_clarification"].includes(s.state) ? "waiting" :
+      (["waiting_feedback","waiting_clarification","waiting_confirm"].includes(s.state) ? "waiting" :
       ["running","connecting","editing"].includes(s.state) ? "running" : s.state);
     $("stateText").textContent = (stateNames[s.state] || s.state) +
       (s.iteration ? ` · 第 ${s.iteration} 轮` : "") +
@@ -559,17 +603,31 @@ async function poll() {
     if (s.logs.length) { $("log").textContent = s.logs.join("\n");
                          $("log").scrollTop = $("log").scrollHeight; }
 
+    // 确认关卡：进入时填一次（后续轮询不覆盖你正在编辑的内容）
+    if (s.state === "waiting_confirm") {
+      $("confirmCard").style.display = "block";
+      if (!confirmLoaded) {
+        $("understanding").textContent = s.understanding || "";
+        $("promptZh").value = s.prompt_zh || "";
+        $("confirmNote").value = "";
+        confirmLoaded = true;
+      }
+    } else {
+      $("confirmCard").style.display = "none";
+      confirmLoaded = false;
+    }
+
     $("fbCard").style.display = s.state === "waiting_feedback" ? "block" : "none";
     $("clarifyCard").style.display = s.state === "waiting_clarification" ? "block" : "none";
     if (s.state === "waiting_clarification") $("questions").textContent = s.questions || "";
     $("finishBtn").style.display =
-      ["running","waiting_feedback","waiting_clarification","editing"].includes(s.state)
+      ["running","waiting_confirm","waiting_feedback","waiting_clarification","editing"].includes(s.state)
         ? "inline-block" : "none";
     $("nudgeBtn").style.display =
       ["connecting","running","editing"].includes(s.state)
         ? "inline-block" : "none";
     $("startBtn").disabled =
-      ["connecting","running","waiting_clarification","waiting_feedback","editing"]
+      ["connecting","running","waiting_confirm","waiting_clarification","waiting_feedback","editing"]
         .includes(s.state);
     if (s.state === "done") {
       $("doneCard").style.display = "block";
@@ -589,6 +647,7 @@ async function poll() {
           <div class="verdict">${esc(it.verdict || "")}</div>
           <details><summary>篡改检查明细</summary><pre>${esc(it.analysis)}</pre></details>
           <details><summary>本轮${it.kind === "edit" ? "的修改指令" : "后的提示词"}</summary><pre>${esc(it.prompt)}</pre></details>
+          <button class="editbtn" onclick="fillFeedback(${rendered})">📋 把这条评价填入点评框</button>
           <button class="editbtn" onclick="openEditor('${it.image}')">🖌 圈选局部修改这张图</button>
         </div>`;
       $("gallery").prepend(div);
@@ -637,8 +696,10 @@ renderPromptLibrary();
 checkConn();
 
 /* ---------------- 局部修改画板 ---------------- */
-let edImg = null, edSource = "", edTool = "brush", strokes = [], drawing = null;
+let edImg = null, edSource = "", edTool = "brush", strokes = [], drawing = null, erasing = false;
 const canvas = $("editCanvas"), ctx = canvas.getContext("2d");
+const TOOL_IDS = { brush:"toolBrush", line:"toolLine", rect:"toolRect",
+                   poly:"toolPoly", smear:"toolSmear", eraser:"toolEraser" };
 
 function openEditor(imageName) {
   if (curState !== "waiting_feedback") {
@@ -660,29 +721,49 @@ function openEditor(imageName) {
 function closeEditor() { $("editor").style.display = "none"; }
 function setTool(t) {
   edTool = t;
-  $("toolBrush").classList.toggle("active", t === "brush");
-  $("toolRect").classList.toggle("active", t === "rect");
+  for (const [tool, id] of Object.entries(TOOL_IDS))
+    $(id).classList.toggle("active", t === tool);
+  // 切走时若有没闭合的多边形，丢弃
+  if (t !== "poly" && drawing && drawing.tool === "poly") drawing = null;
+  canvas.style.cursor = t === "eraser" ? "cell" : "crosshair";
+  render();
 }
-function undoStroke() { strokes.pop(); render(); }
-function clearStrokes() { strokes = []; render(); }
+function undoStroke() {
+  if (drawing && drawing.tool === "poly") {       // 正在点多边形：退一个点
+    drawing.pts.pop();
+    if (!drawing.pts.length) drawing = null;
+  } else strokes.pop();
+  render();
+}
+function clearStrokes() { strokes = []; drawing = null; render(); }
 
 function render() {
   ctx.drawImage(edImg, 0, 0, canvas.width, canvas.height);
   ctx.strokeStyle = "rgba(255,40,40,.95)";
   ctx.fillStyle = "rgba(255,40,40,.35)";
   ctx.lineCap = ctx.lineJoin = "round";
+  const W = canvas.width;
+  const poly = (pts) => pts.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
   for (const s of [...strokes, drawing].filter(Boolean)) {
-    if (s.tool === "brush") {
-      ctx.lineWidth = Math.max(14, canvas.width / 60);
-      ctx.beginPath();
-      s.pts.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
-      ctx.stroke();
-    } else {
+    if (s.tool === "brush" || s.tool === "smear") {
+      ctx.lineWidth = s.tool === "smear" ? Math.max(30, W / 26) : Math.max(14, W / 60);
+      ctx.beginPath(); poly(s.pts); ctx.stroke();
+    } else if (s.tool === "line") {
+      ctx.lineWidth = Math.max(6, W / 120);
+      ctx.beginPath(); ctx.moveTo(s.x0, s.y0); ctx.lineTo(s.x1, s.y1); ctx.stroke();
+    } else if (s.tool === "rect") {
       const x = Math.min(s.x0, s.x1), y = Math.min(s.y0, s.y1),
             w = Math.abs(s.x1 - s.x0), h = Math.abs(s.y1 - s.y0);
-      ctx.lineWidth = 4;
-      ctx.fillRect(x, y, w, h);
-      ctx.strokeRect(x, y, w, h);
+      ctx.lineWidth = 4; ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
+    } else if (s.tool === "poly") {
+      ctx.lineWidth = Math.max(4, W / 150);
+      ctx.beginPath(); poly(s.pts);
+      if (s.closed) { ctx.closePath(); ctx.fill(); ctx.stroke(); }
+      else {
+        if (s.hover) ctx.lineTo(s.hover[0], s.hover[1]);
+        ctx.stroke();
+        for (const p of s.pts) { ctx.beginPath(); ctx.arc(p[0], p[1], Math.max(3, W / 260), 0, 7); ctx.fill(); }
+      }
     }
   }
 }
@@ -692,26 +773,69 @@ function evPos(e) {
   return [(e.clientX - r.left) * canvas.width / r.width,
           (e.clientY - r.top) * canvas.height / r.height];
 }
+// 橡皮擦命中检测
+function segDist(px, py, x0, y0, x1, y1) {
+  const dx = x1 - x0, dy = y1 - y0, L = dx * dx + dy * dy;
+  let t = L ? ((px - x0) * dx + (py - y0) * dy) / L : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+}
+function hitStroke(s, x, y, R) {
+  if (s.tool === "rect") {
+    return x >= Math.min(s.x0, s.x1) - R && x <= Math.max(s.x0, s.x1) + R &&
+           y >= Math.min(s.y0, s.y1) - R && y <= Math.max(s.y0, s.y1) + R;
+  }
+  if (s.tool === "line") return segDist(x, y, s.x0, s.y0, s.x1, s.y1) <= R;
+  const pts = s.pts || [];
+  for (let k = 0; k < pts.length; k++) {
+    if (Math.hypot(x - pts[k][0], y - pts[k][1]) <= R) return true;
+    if (k > 0 && segDist(x, y, pts[k - 1][0], pts[k - 1][1], pts[k][0], pts[k][1]) <= R) return true;
+  }
+  return false;
+}
+function eraseAt(x, y) {
+  const R = Math.max(20, canvas.width / 35);
+  for (let k = strokes.length - 1; k >= 0; k--) {
+    if (hitStroke(strokes[k], x, y, R)) { strokes.splice(k, 1); render(); return; }
+  }
+}
 canvas.addEventListener("pointerdown", e => {
   e.preventDefault(); canvas.setPointerCapture(e.pointerId);
   const [x, y] = evPos(e);
-  drawing = edTool === "brush" ? { tool: "brush", pts: [[x, y]] }
-                               : { tool: "rect", x0: x, y0: y, x1: x, y1: y };
+  if (edTool === "eraser") { erasing = true; eraseAt(x, y); return; }
+  if (edTool === "poly") {                          // 逐点点击，双击闭合
+    if (drawing && drawing.tool === "poly") drawing.pts.push([x, y]);
+    else drawing = { tool: "poly", pts: [[x, y]], closed: false };
+    render(); return;
+  }
+  if (edTool === "brush" || edTool === "smear") drawing = { tool: edTool, pts: [[x, y]] };
+  else drawing = { tool: edTool, x0: x, y0: y, x1: x, y1: y };  // line / rect
+  render();
 });
 canvas.addEventListener("pointermove", e => {
-  if (!drawing) return;
   const [x, y] = evPos(e);
-  if (drawing.tool === "brush") drawing.pts.push([x, y]);
+  if (erasing) { eraseAt(x, y); return; }
+  if (!drawing) return;
+  if (drawing.tool === "poly") { drawing.hover = [x, y]; render(); return; }
+  if (drawing.tool === "brush" || drawing.tool === "smear") drawing.pts.push([x, y]);
   else { drawing.x1 = x; drawing.y1 = y; }
   render();
 });
 canvas.addEventListener("pointerup", () => {
-  if (drawing) { strokes.push(drawing); drawing = null; render(); }
+  if (erasing) { erasing = false; return; }
+  if (!drawing || drawing.tool === "poly") return;  // poly 由双击结束
+  strokes.push(drawing); drawing = null; render();
+});
+canvas.addEventListener("dblclick", () => {
+  if (drawing && drawing.tool === "poly" && drawing.pts.length >= 3) {
+    drawing.closed = true; delete drawing.hover;
+    strokes.push(drawing); drawing = null; render();
+  }
 });
 
 async function submitEdit() {
   const instruction = $("editInstruction").value.trim();
-  if (!strokes.length) { alert("请先用画笔或框选在图上标出要修改的区域"); return; }
+  if (!strokes.length) { alert("请先用上面的工具在图上标红要修改的区域（多边形套索需双击闭合）"); return; }
   if (!instruction) { alert("请写清楚圈出的区域要怎么改"); return; }
   const j = await (await fetch("/api/regional_edit", { method: "POST",
     headers: {"Content-Type":"application/json"},

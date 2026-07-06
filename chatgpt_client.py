@@ -101,22 +101,40 @@ class ChatGPTClient:
     # ---------- 发消息 ----------
 
     def send(self, page, text: str, image_paths=None, expect_image=False) -> str:
-        """发一条消息（可带图），阻塞等回复完成，返回回复文本。"""
+        """发一条消息（可带图），阻塞等回复完成，返回回复文本。
+
+        文本步骤（导演对话）等不到回复时会自动"刷新+重发"，因为最常见的失败是
+        消息压根没发出去（发送按钮没触发/被弹窗挡住），重发不消耗生图额度、能救回大多数卡死；
+        生图步骤重发会重复扣额度，只尝试一次。
+        """
         image_paths = image_paths or []
-        before = page.locator(SEL["assistant"]).count()
-
-        if image_paths:
-            self._attach_files(page, image_paths)
-
-        editor = page.locator(SEL["editor"])
-        editor.click()
-        page.keyboard.insert_text(text)
-        page.wait_for_timeout(500)
-        self._click_send(page)
-
         timeout = IMAGE_TIMEOUT if expect_image else TEXT_TIMEOUT
-        self._wait_reply_done(page, before, timeout, expect_image)
-        return self.last_reply_text(page)
+        max_attempts = 1 if expect_image else 3
+        last_err = None
+
+        for attempt in range(1, max_attempts + 1):
+            before = page.locator(SEL["assistant"]).count()
+            if image_paths:
+                self._attach_files(page, image_paths)
+            editor = page.locator(SEL["editor"])
+            editor.click()
+            page.keyboard.insert_text(text)
+            page.wait_for_timeout(500)
+            self._click_send(page)
+            try:
+                self._wait_reply_done(page, before, timeout, expect_image)
+                return self.last_reply_text(page)
+            except ChatGPTError as e:
+                last_err = e
+                if attempt < max_attempts:
+                    self.log(f"这一步 {timeout}s 没等到回复（多半消息没发出去），"
+                             f"刷新页面后重发（第 {attempt + 1}/{max_attempts} 次）…")
+                    try:
+                        page.reload(wait_until="domcontentloaded", timeout=60000)
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(3000)
+        raise last_err
 
     def _attach_files(self, page, paths):
         inputs = page.locator(SEL["file_input"])

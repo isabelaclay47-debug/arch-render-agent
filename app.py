@@ -44,13 +44,16 @@ app = Flask(__name__)
 
 # ---------------- 会话状态（单会话即可） ----------------
 S = {
-    # idle/connecting/running/waiting_clarification/waiting_feedback/editing/done/error
+    # idle/connecting/running/waiting_confirm/waiting_clarification/
+    #   waiting_feedback/editing/done/error
     "state": "idle",
     "session_id": None,
     "iteration": 0,
     "items": [],              # [{iter, image, kind, analysis, verdict, prompt}]
     "logs": [],
     "questions": "",          # AI 反问建筑师的问题（waiting_clarification 时非空）
+    "understanding": "",      # AI 对需求的中文讲解（waiting_confirm 时非空）
+    "prompt_zh": "",          # 供建筑师阅读/编辑的中文提示词（waiting_confirm 时非空）
     "error": "",
     "final_path": "",
 }
@@ -58,6 +61,9 @@ _lock = threading.Lock()
 _feedback_event = threading.Event()
 # type: continue(带点评继续) / satisfied(满意结束) / edit(局部修改)
 _feedback = {"type": "continue", "text": "", "edit": None}
+_confirm_event = threading.Event()
+# action: confirm(就用这份去生图) / adjust(让AI按我的修改再调整一版)
+_confirm = {"action": "confirm", "edited_zh": "", "note": ""}
 _finish_now = threading.Event()
 _nudge = threading.Event()  # 人工干预：让正在等待的浏览器操作立刻刷新重查
 
@@ -224,23 +230,75 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             reply = client.send(client.director_page,
                                 pe.clarification_answer_prompt(answers))
 
-        prompt = reply.strip()
-        # 首版偶尔过短：模型可能只回了句客套、或网页把输出截断了。别直接判败——
-        # 先把原始回复记进日志，再追一刀要求它直接给全文。
-        if len(prompt) < 60:
-            log(f"首版提示词偏短（{len(prompt)} 字），原始回复：{prompt[:120] or '（空）'}")
-            log("追问一次，要求导演直接输出完整提示词…")
+        # 解析双语产出：中文讲解/中文提示词给建筑师看，英文提示词发给生图
+        parsed = pe.parse_director_reply(reply)
+        understanding = parsed["understanding"]
+        prompt_zh = parsed["prompt_zh"]
+        prompt = parsed["prompt_en"]   # 工作变量：发给生图模型的英文提示词
+
+        # 英文提示词偶尔缺失/过短：模型漏标签或网页截断。别直接判败——追一刀要全文。
+        if len(prompt) < 40:
+            log(f"英文提示词偏短/缺失，原始回复：{reply[:120] or '（空）'}。追问一次…")
             reply = client.send(
                 client.director_page,
-                "请直接输出你要用于生成的完整建筑渲染提示词本身：中文、具体、不少于 150 字，"
-                "覆盖光线时段/材质细节/环境配景/相机质感，末尾附忠实性约束。"
-                "不要任何解释或客套，也不要反问。")
-            prompt = reply.strip()
-        if len(prompt) < 60:
+                "刚才的输出不完整。请严格按 <理解>…</理解><中文提示词>…</中文提示词>"
+                "<英文提示词>…</英文提示词> 三段重新输出，英文提示词必须是完整可用的英文段落。")
+            parsed = pe.parse_director_reply(reply)
+            understanding = parsed["understanding"] or understanding
+            prompt_zh = parsed["prompt_zh"] or prompt_zh
+            prompt = parsed["prompt_en"] or prompt
+        if len(prompt) < 40:
             raise ChatGPTError(
-                f"导演对话两次都没返回像样的首版提示词（拿到：{prompt[:80] or '空'}）。"
-                "多半是 ChatGPT 网页异常或未真正登录——请到专用 Chrome 窗口看一眼是否有弹窗/验证，再重试。")
+                "导演对话两次都没给出可用的英文提示词。多半是 ChatGPT 网页异常或未真正登录——"
+                "请到专用 Chrome 窗口看一眼是否有弹窗/验证，再重试。")
         log("第一版提示词已生成。")
+
+        def director_adjust(edited_zh: str, note: str):
+            """建筑师在确认关卡改了中文/提了意见 → 导演重新对齐三段产出，返回(讲解,中文,英文)。"""
+            with _lock:
+                S["state"] = "running"
+            log("建筑师调整了提示词，导演据此重新组织…")
+            rep = client.send(client.director_page, pe.adjust_prompt(edited_zh, note))
+            for _ in range(3):  # 调整里若有关键歧义，导演也会反问
+                q = pe.extract_questions(rep)
+                if not q:
+                    break
+                a = ask_architect(q)
+                if a is None:
+                    raise ChatGPTError("在确认提示词前结束了任务，尚未生成任何图片。")
+                with _lock:
+                    S["state"] = "running"
+                rep = client.send(client.director_page, pe.clarification_answer_prompt(a))
+            p = pe.parse_director_reply(rep)
+            return (p["understanding"] or understanding,
+                    p["prompt_zh"] or edited_zh or prompt_zh,
+                    p["prompt_en"] or prompt)
+
+        # 2) 确认关卡：给建筑师看中文讲解 + 可编辑中文提示词，确认或调整后再生图
+        while True:
+            with _lock:
+                S["state"] = "waiting_confirm"
+                S["understanding"] = understanding
+                S["prompt_zh"] = prompt_zh
+            log("等待建筑师确认理解与中文提示词（还没消耗生图额度）…")
+            _confirm_event.wait()
+            _confirm_event.clear()
+            if _finish_now.is_set():
+                raise ChatGPTError("在确认提示词前结束了任务，尚未生成任何图片。")
+            edited = _confirm["edited_zh"].strip()
+            note = _confirm["note"].strip()
+            if _confirm["action"] == "confirm":
+                # 若建筑师在框里改过中文，先让导演把英文同步到位再生图
+                if edited and edited != prompt_zh.strip():
+                    understanding, prompt_zh, prompt = director_adjust(edited, note)
+                break
+            # action == adjust：重新对齐后回到确认关卡再看一眼
+            understanding, prompt_zh, prompt = director_adjust(edited or prompt_zh, note)
+        with _lock:
+            S["state"] = "running"
+            S["understanding"] = ""
+            S["prompt_zh"] = ""
+        log("提示词已确认，开始生图。")
 
         # fidelity_base：QC 忠实性参照（新图始终和它对比查偏移）。初始=原图；
         #   建筑师批准的局部修改后更新为修改结果。
@@ -301,8 +359,12 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             marked = edit["marked_path"]
             instruction = edit["instruction"]
             log(f"第 {i} 轮（局部修改）：只修改标记区域——{instruction[:50]}…")
+            # 发给生图的一律英文：先把中文修改指令翻成英文（纯文本，不耗生图额度）
+            tr = client.send(client.director_page,
+                             pe.translate_instruction_prompt(instruction))
+            instruction_en = pe.parse_director_reply(tr)["prompt_en"] or instruction
             client.new_generation_chat()
-            client.send(client.gen_page, pe.regional_edit_message(instruction),
+            client.send(client.gen_page, pe.regional_edit_message(instruction_en),
                         image_paths=[src, marked], expect_image=True)
             img_path = os.path.join(sess_dir, f"iter_{i:02d}.png")
             if not client.download_last_image(client.gen_page, img_path):
@@ -379,6 +441,8 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                     parsed = pe.parse_director_reply(fb_reply)
                     if parsed["new_prompt"]:
                         prompt = parsed["new_prompt"]
+                        if parsed["prompt_zh"]:
+                            prompt_zh = parsed["prompt_zh"]
                         log("提示词已按点评修订。")
                     else:
                         log("警告：点评后未解析出新提示词，沿用上一版。")
@@ -422,8 +486,8 @@ def index():
 
 @app.route("/api/start", methods=["POST"])
 def api_start():
-    if S["state"] in ("connecting", "running", "waiting_clarification",
-                      "waiting_feedback", "editing"):
+    if S["state"] in ("connecting", "running", "waiting_confirm",
+                      "waiting_clarification", "waiting_feedback", "editing"):
         return jsonify({"ok": False, "msg": "已有任务在运行"}), 400
 
     requirement = request.form.get("requirement", "").strip()
@@ -448,8 +512,10 @@ def api_start():
     with _lock:
         S.update({"state": "connecting", "session_id": sess_id, "iteration": 0,
                   "items": [], "logs": [], "questions": "",
+                  "understanding": "", "prompt_zh": "",
                   "error": "", "final_path": ""})
     _feedback_event.clear()
+    _confirm_event.clear()
     _finish_now.clear()
     _nudge.clear()
 
@@ -482,6 +548,19 @@ def api_feedback():
     _feedback["text"] = data.get("text", "")
     _feedback["edit"] = None
     _feedback_event.set()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/confirm_prompt", methods=["POST"])
+def api_confirm_prompt():
+    """确认关卡：建筑师确认/调整中文提示词。adjust=True 表示让 AI 按修改再调整一版。"""
+    if S["state"] != "waiting_confirm":
+        return jsonify({"ok": False, "msg": "当前不在确认阶段"}), 400
+    data = request.get_json(force=True)
+    _confirm["action"] = "adjust" if data.get("adjust") else "confirm"
+    _confirm["edited_zh"] = (data.get("edited_zh") or "").strip()
+    _confirm["note"] = (data.get("note") or "").strip()
+    _confirm_event.set()
     return jsonify({"ok": True})
 
 
@@ -533,8 +612,8 @@ def api_clarify():
 @app.route("/api/chrome_status")
 def api_chrome_status():
     """检测专用 Chrome 与 ChatGPT 登录状态：chrome_off / not_logged_in / ready。"""
-    if S["state"] in ("connecting", "running", "waiting_clarification",
-                      "waiting_feedback", "editing"):
+    if S["state"] in ("connecting", "running", "waiting_confirm",
+                      "waiting_clarification", "waiting_feedback", "editing"):
         return jsonify({"status": "ready", "detail": "渲染任务运行中，连接正常"})
     try:
         _local_get(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=2)
@@ -597,6 +676,7 @@ def api_nudge():
 def api_finish_now():
     _finish_now.set()
     _feedback_event.set()  # 如果正卡在点评等待，也放行
+    _confirm_event.set()   # 如果正卡在确认关卡，也放行
     return jsonify({"ok": True})
 
 
