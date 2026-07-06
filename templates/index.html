@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>建筑渲染智能体</title>
+<style>
+  /* ── Sherwin-Williams 色板 ─────────────────────────────
+     SW7012 Creamy #EFE8DB · SW9611 Minimalist #D5CBBA
+     SW7504 Keystone Gray #A79C93 · SW7580 Carnelian #5B4144
+     SW7675 Sealskin #48423B                              */
+  :root {
+    --cream: #EFE8DB; --paper: #FAF6EE; --paper2: #F3EDE1;
+    --sand: #D5CBBA; --taupe: #A79C93;
+    --wine: #5B4144; --wine-deep: #4A3438;
+    --ink: #48423B; --ink-deep: #3A352F;
+    --gold: #A8853C; --sage: #6B8F5B; --brick: #A34242;
+    --serif: Georgia, "Palatino Linotype", "STZhongsong", "SimSun", serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--cream); color: var(--ink);
+         font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+
+  /* ── 页眉 ── */
+  .top { padding: 34px 34px 0; }
+  .top .inner { max-width: 1480px; margin: 0 auto; border-bottom: 1px solid var(--sand);
+                padding-bottom: 22px; display: flex; justify-content: space-between;
+                align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+  .conn { display: flex; align-items: center; gap: 9px; background: var(--paper);
+          border: 1px solid var(--sand); border-radius: 999px; padding: 8px 10px 8px 16px; }
+  .conn .pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--taupe); }
+  .conn .pulse.off { background: var(--brick); }
+  .conn .pulse.nologin { background: var(--gold); animation: pulse 1.2s infinite; }
+  .conn .pulse.ready { background: var(--sage); }
+  #connText { font-size: 12.5px; color: var(--ink); }
+  .conn button { padding: 6px 14px; font-size: 12px; border-radius: 999px; }
+  .top h1 { margin: 0; font-family: var(--serif); font-weight: 500; font-size: 30px;
+            letter-spacing: 6px; color: var(--ink-deep); }
+  .top h1 em { font-style: normal; color: var(--wine); }
+  .top h1 .cn { font-size: 17px; letter-spacing: 10px; color: var(--taupe);
+                margin-left: 14px; }
+  .top p { margin: 10px 0 0; color: var(--taupe); font-size: 12.5px; letter-spacing: 1.5px; }
+  .swatches { display: flex; width: 220px; height: 5px; margin-top: 16px; }
+  .swatches i { flex: 1; }
+  .swatches i:nth-child(1){background:#EFE8DB}.swatches i:nth-child(2){background:#D5CBBA}
+  .swatches i:nth-child(3){background:#A79C93}.swatches i:nth-child(4){background:#5B4144}
+  .swatches i:nth-child(5){background:#48423B}
+
+  .layout { display: grid; grid-template-columns: 400px 1fr; gap: 26px;
+            max-width: 1480px; margin: 0 auto; padding: 26px 34px 100px; }
+  @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+  .left { position: sticky; top: 18px; align-self: start; display: flex;
+          flex-direction: column; gap: 18px; }
+  @media (max-width: 980px) { .left { position: static; } }
+
+  .card { background: var(--paper); border: 1px solid var(--sand);
+          border-radius: 4px; padding: 22px;
+          box-shadow: 0 1px 2px rgba(72,66,59,.05), 0 6px 18px rgba(72,66,59,.05); }
+  .card h2 { margin: 0 0 16px; font-family: var(--serif); font-size: 15px;
+             font-weight: 600; color: var(--wine); letter-spacing: 3px; }
+  .card h2 small { font-family: "Segoe UI","Microsoft YaHei",sans-serif; font-weight: 400;
+                   font-size: 11.5px; color: var(--taupe); letter-spacing: .5px; }
+
+  label { display: block; font-size: 13px; margin: 15px 0 7px; color: var(--ink-deep);
+          font-weight: 600; }
+  label small { color: var(--taupe); font-weight: 400; }
+  textarea { width: 100%; min-height: 96px; background: #fff; color: var(--ink);
+             border: 1px solid var(--sand); border-radius: 3px; padding: 11px 13px;
+             font: 13px/1.7 inherit; resize: vertical; }
+  textarea:focus { outline: none; border-color: var(--wine); }
+  textarea::placeholder { color: #BDB2A4; }
+
+  .drop { border: 1px dashed var(--taupe); border-radius: 3px; padding: 13px;
+          text-align: center; color: var(--taupe); font-size: 12.5px; cursor: pointer;
+          background: var(--paper2); transition: all .15s; }
+  .drop:hover { border-color: var(--wine); color: var(--wine); background: #fff; }
+  .drop input { display: none; }
+  .thumbs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .thumbs img { width: 64px; height: 48px; object-fit: cover; border-radius: 2px;
+                border: 1px solid var(--sand); }
+
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pills input { display: none; }
+  .pills span { display: inline-block; padding: 7px 17px; border-radius: 999px;
+                border: 1px solid var(--sand); background: #fff;
+                font-size: 12.5px; color: var(--ink); cursor: pointer; transition: all .15s; }
+  .pills span:hover { border-color: var(--wine); color: var(--wine); }
+  .pills input:checked + span { background: var(--wine); border-color: var(--wine);
+                                color: var(--cream); }
+  .pills input:checked + span:hover { color: var(--cream); }
+
+  .preset-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 10px; }
+  .preset-tab { padding: 6px 10px; border-radius: 3px; border: 1px solid var(--sand);
+                background: #fff; color: var(--taupe); font-size: 11.5px; font-weight: 500; }
+  .preset-tab.active { color: var(--cream); background: var(--wine); border-color: var(--wine); }
+  .preset-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 7px; }
+  .preset-btn { min-height: 34px; padding: 7px 8px; border: 1px solid var(--sand);
+                background: #fff; color: var(--ink); border-radius: 3px;
+                font-size: 12px; line-height: 1.35; font-weight: 500; text-align: left; }
+  .preset-btn:hover { border-color: var(--wine); color: var(--wine); background: var(--paper2); }
+  .preset-preview { min-height: 58px; margin-top: 9px; padding: 9px 10px;
+                    border: 1px solid var(--sand); border-radius: 3px;
+                    background: var(--paper2); color: var(--ink); font-size: 11.5px;
+                    line-height: 1.65; white-space: pre-wrap; }
+
+  button { border: 0; border-radius: 3px; padding: 12px 22px; font-size: 14px;
+           font-weight: 600; cursor: pointer; font-family: inherit; }
+  .btn-primary { width: 100%; margin-top: 20px; background: var(--wine); color: var(--cream);
+                 letter-spacing: 6px; font-family: var(--serif); font-size: 15px;
+                 transition: background .15s; }
+  .btn-primary:hover { background: var(--wine-deep); }
+  .btn-primary:disabled { background: var(--sand); color: #fff; cursor: not-allowed; }
+  .btn-blue { background: var(--ink); color: var(--cream); }
+  .btn-blue:hover { background: var(--ink-deep); }
+  .btn-green { background: var(--sage); color: #fff; }
+  .btn-ghost { background: transparent; border: 1px solid var(--taupe);
+               color: var(--taupe); font-weight: 400; padding: 8px 14px; font-size: 12.5px; }
+  .btn-ghost:hover { color: var(--wine); border-color: var(--wine); }
+
+  .statusrow { display: flex; align-items: center; gap: 10px; }
+  .pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--sand); flex: none; }
+  .pulse.running { background: var(--wine); animation: pulse 1.2s infinite; }
+  .pulse.waiting { background: var(--gold); animation: pulse 1.2s infinite; }
+  .pulse.done { background: var(--sage); }
+  .pulse.error { background: var(--brick); }
+  @keyframes pulse { 50% { opacity: .25; } }
+  #stateText { font-size: 13.5px; }
+  #log { background: var(--ink); border: 1px solid var(--ink); color: var(--sand);
+         font: 11.5px/1.8 Consolas, monospace; border-radius: 3px; padding: 11px 14px;
+         max-height: 170px; overflow-y: auto; white-space: pre-wrap; margin-top: 14px; }
+
+  #clarifyCard { border-left: 3px solid var(--wine); }
+  #clarifyCard b { color: var(--wine); font-size: 13.5px; letter-spacing: 1px; }
+  #questions { background: var(--paper2); border: 1px solid var(--sand); border-radius: 3px;
+               padding: 12px 14px; font-size: 13px; line-height: 1.9; color: var(--ink);
+               white-space: pre-wrap; margin-top: 10px; font-family: var(--serif); }
+  #fbCard { border-left: 3px solid var(--gold); }
+  #fbCard b { color: var(--gold); font-size: 13.5px; letter-spacing: 1px; }
+  #doneCard { border-left: 3px solid var(--sage); }
+  #doneCard b { color: var(--sage); }
+  .row { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  .row button { flex: 1; padding: 10px 12px; font-size: 13px; }
+
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px,1fr));
+             gap: 18px; }
+  .empty { grid-column: 1/-1; text-align: center; color: var(--taupe); padding: 80px 0;
+           font-size: 13px; letter-spacing: 3px; font-family: var(--serif); }
+  .item { background: var(--paper); border: 1px solid var(--sand); border-radius: 4px;
+          overflow: hidden; transition: all .2s;
+          box-shadow: 0 1px 2px rgba(72,66,59,.05); }
+  .item:hover { border-color: var(--wine); box-shadow: 0 10px 26px rgba(72,66,59,.14);
+                transform: translateY(-2px); }
+  .item img { width: 100%; aspect-ratio: 3/2; object-fit: cover; display: block;
+              cursor: zoom-in; background: var(--paper2); }
+  .item .meta { padding: 13px 15px; font-size: 12px; }
+  .item .badge { display: inline-block; border: 1px solid var(--wine); border-radius: 2px;
+                 padding: 2px 10px; font-size: 11px; color: var(--wine);
+                 letter-spacing: 2px; margin-bottom: 8px; font-family: var(--serif); }
+  .item .verdict { color: var(--ink); line-height: 1.6; }
+  details { margin-top: 7px; }
+  details summary { cursor: pointer; color: var(--taupe); font-size: 11.5px; }
+  details summary:hover { color: var(--wine); }
+  details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink);
+                max-height: 190px; overflow-y: auto; background: var(--paper2);
+                border-radius: 3px; padding: 9px 11px; }
+
+  #lightbox { position: fixed; inset: 0; background: rgba(58,53,47,.94); display: none;
+              align-items: center; justify-content: center; z-index: 99; cursor: zoom-out; }
+  #lightbox img { max-width: 96vw; max-height: 96vh; border-radius: 2px; }
+
+  .editbtn { display: block; width: 100%; margin-top: 10px; padding: 7px 0;
+             background: transparent; border: 1px solid var(--sand); color: var(--taupe);
+             border-radius: 3px; font-size: 12px; font-weight: 400; letter-spacing: 1px; }
+  .editbtn:hover { color: var(--wine); border-color: var(--wine); background: #fff; }
+
+  /* 局部修改画板 */
+  #editor { position: fixed; inset: 0; background: rgba(58,53,47,.94); display: none;
+            z-index: 100; align-items: center; justify-content: center; }
+  .editor-box { background: var(--paper); border: 1px solid var(--sand); border-radius: 4px;
+                padding: 18px; max-width: 96vw; max-height: 96vh; overflow: auto; }
+  .editor-tools { display: flex; gap: 8px; align-items: center; margin-bottom: 12px;
+                  flex-wrap: wrap; }
+  .editor-tools b { font-family: var(--serif); font-size: 15px; color: var(--wine);
+                    letter-spacing: 2px; }
+  .tool { padding: 7px 16px; border-radius: 3px; border: 1px solid var(--sand);
+          background: #fff; color: var(--ink); font-size: 12.5px; font-weight: 400; }
+  .tool:hover { border-color: var(--wine); color: var(--wine); }
+  .tool.active { background: var(--wine); border-color: var(--wine); color: var(--cream);
+                 font-weight: 600; }
+  #editCanvas { display: block; border-radius: 2px; cursor: crosshair; touch-action: none;
+                max-width: 90vw; max-height: 58vh; border: 1px solid var(--sand); }
+  .editor-box textarea { min-height: 60px; margin-top: 12px; }
+  .editor-hint { color: var(--taupe); font-size: 12px; margin: 10px 0 0; }
+  .editor-hint b { color: var(--wine); }
+</style>
+</head>
+<body>
+
+<div class="top"><div class="inner">
+  <div>
+    <h1>ARCH<em> · </em>RENDER<span class="cn">建筑渲染智能体</span></h1>
+    <p>想法 → AI 扩写全面提示词 → 生图 → 对比查篡改 → 自动迭代 · 每 5 轮请你点评 · 满意后输出到桌面</p>
+    <div class="swatches"><i></i><i></i><i></i><i></i><i></i></div>
+  </div>
+  <div class="conn">
+    <div class="pulse" id="connDot"></div>
+    <span id="connText">检测 ChatGPT 连接中…</span>
+    <button class="btn-ghost" onclick="checkConn()">检测</button>
+    <button class="btn-blue" id="launchBtn" style="display:none"
+            onclick="launchChrome()">启动 Chrome 去登录</button>
+  </div>
+</div></div>
+
+<div class="layout">
+  <div class="left">
+
+    <!-- 需求表单 -->
+    <div class="card">
+      <h2>Ⅰ · 需求</h2>
+      <label>建筑师的想法 <small>— 寥寥几句即可，AI 会扩写成全面提示词</small></label>
+      <textarea id="requirement" placeholder="例如：黄昏暖光，玻璃幕墙要有真实反射，前景加行人和行道树，接近杂志摄影感。"></textarea>
+
+      <label>提示词储备库 <small>— 点选后插入到上面的想法里</small></label>
+      <div class="preset-tabs" id="presetTabs"></div>
+      <div class="preset-grid" id="presetGrid"></div>
+      <div class="preset-preview" id="presetPreview">选择一个模块预览内容。</div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn-ghost" type="button" onclick="insertSelectedPreset()">插入选中模块</button>
+        <button class="btn-ghost" type="button" onclick="insertPresetPack()">插入推荐组合</button>
+      </div>
+
+      <label>原图 <small>— 必传，建筑形体将被严格锁定</small></label>
+      <div class="drop" onclick="baseInput.click()">
+        <input type="file" id="baseInput" accept="image/*" onchange="preview(this,'baseThumbs')">
+        <span id="baseHint">点击选择原图</span>
+        <div class="thumbs" id="baseThumbs"></div>
+      </div>
+
+      <label>意向图 <small>— 可选多张，仅借鉴氛围 / 材质 / 光线</small></label>
+      <div class="drop" onclick="refInput.click()">
+        <input type="file" id="refInput" accept="image/*" multiple onchange="preview(this,'refThumbs')">
+        <span id="refHint">点击选择意向图</span>
+        <div class="thumbs" id="refThumbs"></div>
+      </div>
+
+      <label>生成画质</label>
+      <div class="pills" id="qualityPills">
+        <label><input type="radio" name="quality" value="标准" checked><span>标准</span></label>
+        <label><input type="radio" name="quality" value="高清"><span>高清</span></label>
+        <label><input type="radio" name="quality" value="极致"><span>极致细节</span></label>
+      </div>
+
+      <label>画幅</label>
+      <div class="pills">
+        <label><input type="radio" name="ratio" value="跟随原图" checked><span>跟随原图</span></label>
+        <label><input type="radio" name="ratio" value="横版"><span>横版</span></label>
+        <label><input type="radio" name="ratio" value="竖版"><span>竖版</span></label>
+        <label><input type="radio" name="ratio" value="方形"><span>方形</span></label>
+      </div>
+
+      <label>几张一停等我点评</label>
+      <div class="pills">
+        <label><input type="radio" name="review_every" value="1" checked><span>1张一停</span></label>
+        <label><input type="radio" name="review_every" value="2"><span>2张</span></label>
+        <label><input type="radio" name="review_every" value="3"><span>3张</span></label>
+        <label><input type="radio" name="review_every" value="5"><span>5张</span></label>
+      </div>
+      <p style="color:var(--taupe);font-size:11.5px;margin:6px 0 0">
+        每出这么多张就暂停等你点评。张数越少越省生图额度、越早纠偏；越多越自动化。</p>
+
+      <button class="btn-primary" id="startBtn" onclick="start()">开 始 渲 染</button>
+      <p style="color:var(--taupe);font-size:11.5px;margin:12px 0 0">
+        开始前请确认右上角状态灯为绿色（ChatGPT 已登录）——未启动时点「启动 Chrome 去登录」</p>
+    </div>
+
+    <!-- 小贴士 -->
+    <div class="card" style="padding:14px 18px">
+      <div style="font-size:12px;color:var(--taupe);line-height:1.9">
+        <b style="color:var(--wine)">🖌 局部修改在哪？</b>
+        任务跑起来后，右侧每张过程图下方都有「圈选局部修改这张图」按钮——
+        在<b style="color:var(--ink)">每 5 轮点评暂停</b>时点开，用画笔或框选标红要改的部位，
+        AI 只改圈内、不动周边。<br>
+        <b style="color:var(--wine)">🔑 账号登录在哪？</b>
+        在专用 Chrome 窗口里（右上角可一键启动），登录一次 chatgpt.com 即可，之后一直记住。
+      </div>
+    </div>
+
+    <!-- 状态 -->
+    <div class="card">
+      <h2>Ⅱ · 状态</h2>
+      <div class="statusrow">
+        <div class="pulse" id="dot"></div><span id="stateText">未开始</span>
+        <span style="flex:1"></span>
+        <button class="btn-ghost" id="nudgeBtn" style="display:none" onclick="nudgeChatGPT()">刷新 ChatGPT / 重查结果</button>
+        <button class="btn-ghost" id="finishBtn" style="display:none" onclick="finishNow()">提前结束</button>
+      </div>
+      <div id="log">等待任务…</div>
+    </div>
+
+    <!-- AI 反问（需求不明时出现，不消耗生图额度） -->
+    <div class="card" id="clarifyCard" style="display:none">
+      <b>❓ AI 有疑问，答清再生图 <small style="color:var(--taupe);font-weight:400">— 不消耗生图额度</small></b>
+      <div id="questions"></div>
+      <textarea id="clarifyText" style="margin-top:12px"
+        placeholder="逐条回答上面的问题，一句话答清即可。"></textarea>
+      <div class="row">
+        <button class="btn-blue" onclick="sendClarify()">回答，继续</button>
+      </div>
+    </div>
+
+    <!-- 点评（每 5 轮出现） -->
+    <div class="card" id="fbCard" style="display:none">
+      <b>⏸ 请点评这一批过程图</b>
+      <div style="font-size:12px;color:var(--taupe);margin-top:6px">
+        也可以点过程图下方的「🖌 圈选局部修改」——只改圈出的部分，不动周边</div>
+      <textarea id="fbText" style="margin-top:12px"
+        placeholder="例如：第 4 张最好，但天空太假；入口格栅被改掉了必须恢复；行人再少一点。"></textarea>
+      <div class="row">
+        <button class="btn-blue" onclick="sendFeedback(false)">按点评继续</button>
+        <button class="btn-green" onclick="sendFeedback(true)">满意，输出到桌面</button>
+      </div>
+    </div>
+
+    <!-- 完成 -->
+    <div class="card" id="doneCard" style="display:none">
+      <b>✓ 已完成</b>
+      <div style="font-size:12.5px;color:var(--taupe);margin-top:8px">
+        最终图已保存到：<div id="finalPath" style="color:var(--ink);margin-top:4px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 过程图画廊 -->
+  <div>
+    <div class="card" style="padding:15px 22px;margin-bottom:18px">
+      <h2 style="margin:0">Ⅲ · 过程图 <small>— 每轮附 AI 篡改检查结论，点击图片放大</small></h2>
+    </div>
+    <div class="gallery" id="gallery">
+      <div class="empty" id="emptyHint">— 过程图会实时出现在这里 —</div>
+    </div>
+  </div>
+</div>
+
+<div id="lightbox" onclick="this.style.display='none'"><img id="lightboxImg"></div>
+
+<!-- 局部修改画板 -->
+<div id="editor">
+  <div class="editor-box">
+    <div class="editor-tools">
+      <b>🖌 局部修改</b>
+      <span style="flex:1"></span>
+      <button class="tool active" id="toolBrush" onclick="setTool('brush')">画笔圈选</button>
+      <button class="tool" id="toolRect" onclick="setTool('rect')">框选</button>
+      <button class="tool" onclick="undoStroke()">撤销</button>
+      <button class="tool" onclick="clearStrokes()">清空</button>
+      <button class="tool" onclick="closeEditor()">关闭</button>
+    </div>
+    <canvas id="editCanvas"></canvas>
+    <div class="editor-hint">用红色标出<b>唯一允许修改</b>的区域——AI 将被严格要求不动区域外的任何内容</div>
+    <textarea id="editInstruction" placeholder="这个区域要怎么改？例如：把入口雨棚改成木格栅材质 / 去掉这个人 / 这块墙面换成清水混凝土"></textarea>
+    <div class="row">
+      <button class="btn-blue" style="flex:1" onclick="submitEdit()">提交局部修改（只改圈出的部分）</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const stateNames = { idle:"未开始", connecting:"连接 Chrome 中…", running:"迭代运行中",
+                     waiting_clarification:"AI 有疑问，等你回答",
+                     waiting_feedback:"等待你的点评", editing:"局部修改中",
+                     done:"已完成", error:"出错" };
+let sessId = null, rendered = 0, curState = "idle";
+const $ = id => document.getElementById(id);
+
+const PROMPT_LIBRARY = [
+  { cat:"图纸", name:"总平竞赛图", text:"总平面图表达：白底竞赛图风格，清晰表达用地边界、建筑轮廓、道路系统、人行流线、景观分区、入口节点、北向与比例感；线宽层级明确，淡彩功能分区，标签清晰可读。" },
+  { cat:"图纸", name:"平面图", text:"建筑平面图表达：墙体线宽层级清楚，门窗洞口、核心筒、楼梯、电梯、家具尺度、流线箭头和功能分区准确；房间标签可读，图面干净，出版级矢量制图质感。" },
+  { cat:"图纸", name:"立面图", text:"建筑立面图表达：正投影视角，无透视变形；轴网、楼层线、开窗节奏、材料分缝、门头标识和阴影厚度清楚，线面层级克制，适合方案汇报。" },
+  { cat:"图纸", name:"剖面图", text:"建筑剖面图表达：楼板厚度、层高、楼梯/坡道、核心筒、结构与空间关系、采光路径、人物尺度、室内外高差清楚；剖切线黑白分明，背景淡化。" },
+  { cat:"图纸", name:"轴测爆炸", text:"建筑轴测/爆炸图表达：几何准确，构件分层清楚，结构、表皮、交通、景观关系有秩序；使用克制阴影和高可读标签，避免装饰性过度。" },
+
+  { cat:"渲染", name:"写实日景", text:"照片级建筑写实日景：自然白天漫射光，柔和阴影，真实玻璃反射，石材/金属/混凝土细节清晰，人物车辆比例准确、密度适中，专业建筑摄影后期，避免CG塑料感。" },
+  { cat:"渲染", name:"黄金时刻", text:"黄金时刻建筑摄影：低角度暖光，长阴影，玻璃暖冷反差，天空轻微渐变，材质边缘有克制高光，氛围温暖但不过度电影化。" },
+  { cat:"渲染", name:"蓝调夜景", text:"蓝调夜景建筑渲染：天空保留深蓝层次，室内暖光透出，立面灯光有节制，路灯和车灯产生真实反射，玻璃深色透明，避免霓虹过度和曝光炸裂。" },
+  { cat:"渲染", name:"雨后街景", text:"雨后建筑街景：湿地面轻微反射，水迹自然不夸张，天空漫射光，材质饱和度略高，建筑轮廓和窗框保持干净锐利，行人车辆不喧宾夺主。" },
+  { cat:"渲染", name:"鸟瞰城市", text:"鸟瞰城市建筑表现：屋顶关系、道路网、绿化、水体、周边体量和城市尺度清晰；保持真实高度感和空气透视，避免玩具模型感。" },
+
+  { cat:"材料", name:"玻璃幕墙", text:"玻璃幕墙细节：低反射 Low-E 玻璃，室内暗部层次可见，竖梃和横梁清晰，反射遵循天空与周边环境，不做假蓝玻璃，不扭曲窗框。" },
+  { cat:"材料", name:"石材立面", text:"石材立面细节：浅米白或灰白石材，细微颗粒、分缝对齐、边缘倒角、柱脚接触阴影自然；避免塑料白墙、过度洁白、分缝波浪。" },
+  { cat:"材料", name:"清水混凝土", text:"清水混凝土质感：模板缝、拉片孔、微小色差、真实粗糙度和克制边角磨损；整体干净但不死白，避免脏污过度和涂抹感。" },
+  { cat:"材料", name:"金属铝板", text:"金属/铝板立面：拉丝或阳极氧化质感，板缝准确，边缘高光克制，反射柔和，避免镜面化、波浪变形和廉价塑料感。" },
+  { cat:"材料", name:"木格栅", text:"木格栅细节：木纹方向明确，格栅间距一致，阴影节奏真实，暖色不过饱和；保持结构厚度和连接逻辑，不把格栅画成贴图。" },
+
+  { cat:"光影", name:"杂志摄影", text:"建筑杂志摄影质感：等效35-50mm镜头，竖线垂直，两点透视自然，曝光均衡，自然HDR，轻微景深，边缘锐利但不过度锐化，画面干净。" },
+  { cat:"光影", name:"人视街景", text:"人视街景构图：镜头高度接近人眼，前景保留人行尺度，道路和铺装引导视线，建筑竖线保持垂直，人物车辆比例准确。" },
+  { cat:"光影", name:"柔和阴天", text:"柔和阴天光线：大面积漫射光，阴影轻但有层次，材质颜色真实，玻璃反射低调，适合强调立面细节和体量关系。" },
+  { cat:"光影", name:"室内外通透", text:"室内外通透表达：玻璃后方可见适度室内深度、吊顶和暖光层次，室外反射与室内透视平衡，不让玻璃变成黑洞或纯镜面。" },
+
+  { cat:"修复", name:"只修清晰度", text:"只做清晰度和材质细节修复：提升边缘、窗框、石材分缝、玻璃层次和阴影接触关系；不改变构图、体量、道路、场地、天空、人物和车辆。" },
+  { cat:"修复", name:"局部材质替换", text:"局部材质替换：只在指定区域内替换材料，保持区域外逐像素不动；新材质必须服从原图光线、透视、阴影和边界，不新增构件。" },
+  { cat:"修复", name:"恢复楼梯硬景", text:"恢复楼梯和场地硬景：踏步、踢面、平台、坡道、栏杆、铺装缝、路缘石和高差阴影必须按原图保留；禁止填平广场或重画道路。" },
+  { cat:"修复", name:"文字保护", text:"文字和标识保护：门头、logo、道路标线、指示牌、车身文字必须保持原内容、原位置、原字形和清晰度；无法写清楚时宁可保持原样不动。" },
+
+  { cat:"约束", name:"形体锁定", text:"硬性约束：建筑形体、层数、开窗、柱网、屋顶线、楼板线、入口、道路、楼梯、坡道、栏杆、场地高差和周边建筑必须与原图一致，不得增删移动。" },
+  { cat:"约束", name:"负向质量", text:"负向质量约束：禁止过度锐化、强HDR、CG塑料感、假蓝玻璃、乱码文字、弯曲窗框、漂浮建筑、错误阴影、随意加楼层、随意加构件。" },
+  { cat:"约束", name:"意向图边界", text:"意向图使用边界：只借鉴氛围、材质、光线、色调和摄影质感；不借鉴意向图的建筑形体、体量、开窗、场地、树木布置或新增构件。" },
+];
+let presetCat = "渲染", selectedPreset = PROMPT_LIBRARY.find(p => p.cat === presetCat);
+
+function renderPromptLibrary() {
+  const cats = [...new Set(PROMPT_LIBRARY.map(p => p.cat))];
+  $("presetTabs").innerHTML = cats.map(c =>
+    `<button type="button" class="preset-tab ${c === presetCat ? "active" : ""}" onclick="setPresetCat('${c}')">${c}</button>`
+  ).join("");
+  const items = PROMPT_LIBRARY.filter(p => p.cat === presetCat);
+  if (!items.includes(selectedPreset)) selectedPreset = items[0];
+  $("presetGrid").innerHTML = items.map((p, i) =>
+    `<button type="button" class="preset-btn" onclick="selectPreset(${PROMPT_LIBRARY.indexOf(p)})">${p.name}</button>`
+  ).join("");
+  $("presetPreview").textContent = selectedPreset ? selectedPreset.text : "";
+}
+
+function setPresetCat(cat) {
+  presetCat = cat;
+  selectedPreset = PROMPT_LIBRARY.find(p => p.cat === cat);
+  renderPromptLibrary();
+}
+
+function selectPreset(index) {
+  selectedPreset = PROMPT_LIBRARY[index];
+  $("presetPreview").textContent = selectedPreset.text;
+}
+
+function appendRequirement(text) {
+  const box = $("requirement");
+  const prefix = box.value.trim() ? "\n" : "";
+  box.value = box.value.trim() + prefix + text;
+  box.focus();
+}
+
+function insertSelectedPreset() {
+  if (selectedPreset) appendRequirement(selectedPreset.text);
+}
+
+function insertPresetPack() {
+  const names = ["写实日景", "玻璃幕墙", "石材立面", "杂志摄影", "形体锁定", "负向质量"];
+  appendRequirement(PROMPT_LIBRARY.filter(p => names.includes(p.name)).map(p => p.text).join("\n"));
+}
+
+async function apiJson(url, options = {}) {
+  let resp;
+  try {
+    resp = await fetch(url, options);
+  } catch (e) {
+    throw new Error("无法连接本地服务：" + e.message);
+  }
+  let data;
+  try {
+    data = await resp.json();
+  } catch (e) {
+    throw new Error(`服务返回异常（HTTP ${resp.status}）`);
+  }
+  if (!resp.ok && data && data.msg) throw new Error(data.msg);
+  return data;
+}
+
+function preview(input, boxId) {
+  const box = $(boxId);
+  box.innerHTML = "";
+  for (const f of input.files) {
+    const img = document.createElement("img");
+    img.src = URL.createObjectURL(f);
+    box.appendChild(img);
+  }
+  $(boxId === "baseThumbs" ? "baseHint" : "refHint").textContent =
+    input.files.length ? `已选 ${input.files.length} 张（点击可重选）` :
+    (boxId === "baseThumbs" ? "点击选择原图" : "点击选择意向图");
+}
+
+function picked(name) { return document.querySelector(`input[name=${name}]:checked`).value; }
+
+async function start() {
+  const req = $("requirement").value.trim();
+  const base = $("baseInput").files[0];
+  if (!req || !base) { alert("需求描述和原图都是必填的"); return; }
+  const fd = new FormData();
+  fd.append("requirement", req);
+  fd.append("base_image", base);
+  fd.append("quality", picked("quality"));
+  fd.append("ratio", picked("ratio"));
+  fd.append("review_every", picked("review_every"));
+  for (const f of $("refInput").files) fd.append("ref_images", f);
+  $("startBtn").disabled = true;
+  rendered = 0; $("gallery").innerHTML = "";
+  try {
+    const j = await apiJson("/api/start", { method: "POST", body: fd });
+    if (!j.ok) throw new Error(j.msg || "启动失败");
+  } catch (e) {
+    alert(e.message);
+    $("startBtn").disabled = false;
+  }
+}
+
+async function sendFeedback(satisfied) {
+  const text = $("fbText").value.trim();
+  if (!satisfied && !text) { alert("请写点评，或直接点“满意”"); return; }
+  await fetch("/api/feedback", { method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ text, satisfied }) });
+  $("fbText").value = "";
+  $("fbCard").style.display = "none";
+}
+
+async function sendClarify() {
+  const text = $("clarifyText").value.trim();
+  if (!text) { alert("请先回答 AI 的问题"); return; }
+  const j = await (await fetch("/api/clarify", { method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ text }) })).json();
+  if (!j.ok) { alert(j.msg); return; }
+  $("clarifyText").value = "";
+  $("clarifyCard").style.display = "none";
+}
+
+async function finishNow() {
+  if (!confirm("确定提前结束吗？将把当前最新一张图输出到桌面。")) return;
+  await fetch("/api/finish_now", { method: "POST" });
+}
+
+async function nudgeChatGPT() {
+  const btn = $("nudgeBtn");
+  btn.disabled = true;
+  btn.textContent = "已发送，等待重查…";
+  try {
+    const j = await apiJson("/api/nudge", { method: "POST" });
+    if (!j.ok) throw new Error(j.msg || "刷新失败");
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = "刷新 ChatGPT / 重查结果";
+    }, 4000);
+  }
+}
+
+function zoom(src) { $("lightboxImg").src = src; $("lightbox").style.display = "flex"; }
+
+async function poll() {
+  try {
+    const s = await apiJson("/api/status");
+    sessId = s.session_id; curState = s.state;
+    $("dot").className = "pulse " +
+      (["waiting_feedback","waiting_clarification"].includes(s.state) ? "waiting" :
+      ["running","connecting","editing"].includes(s.state) ? "running" : s.state);
+    $("stateText").textContent = (stateNames[s.state] || s.state) +
+      (s.iteration ? ` · 第 ${s.iteration} 轮` : "") +
+      (s.state === "error" ? "：" + s.error : "");
+    if (s.logs.length) { $("log").textContent = s.logs.join("\n");
+                         $("log").scrollTop = $("log").scrollHeight; }
+
+    $("fbCard").style.display = s.state === "waiting_feedback" ? "block" : "none";
+    $("clarifyCard").style.display = s.state === "waiting_clarification" ? "block" : "none";
+    if (s.state === "waiting_clarification") $("questions").textContent = s.questions || "";
+    $("finishBtn").style.display =
+      ["running","waiting_feedback","waiting_clarification","editing"].includes(s.state)
+        ? "inline-block" : "none";
+    $("nudgeBtn").style.display =
+      ["connecting","running","editing"].includes(s.state)
+        ? "inline-block" : "none";
+    $("startBtn").disabled =
+      ["connecting","running","waiting_clarification","waiting_feedback","editing"]
+        .includes(s.state);
+    if (s.state === "done") {
+      $("doneCard").style.display = "block";
+      $("finalPath").textContent = s.final_path;
+    }
+
+    for (; rendered < s.items.length; rendered++) {
+      const hint = $("emptyHint"); if (hint) hint.remove();
+      const it = s.items[rendered];
+      const url = `/images/${sessId}/${it.image}`;
+      const div = document.createElement("div");
+      div.className = "item";
+      div.innerHTML = `
+        <img src="${url}" onclick="zoom('${url}')">
+        <div class="meta">
+          <span class="badge">第 ${it.iter} 轮 · ${it.kind === "edit" ? "局部修改" : "自动迭代"}</span>
+          <div class="verdict">${esc(it.verdict || "")}</div>
+          <details><summary>篡改检查明细</summary><pre>${esc(it.analysis)}</pre></details>
+          <details><summary>本轮${it.kind === "edit" ? "的修改指令" : "后的提示词"}</summary><pre>${esc(it.prompt)}</pre></details>
+          <button class="editbtn" onclick="openEditor('${it.image}')">🖌 圈选局部修改这张图</button>
+        </div>`;
+      $("gallery").prepend(div);
+    }
+  } catch (e) { /* 服务未就绪时忽略 */ }
+  setTimeout(poll, 2000);
+}
+function esc(t) { const d = document.createElement("div"); d.textContent = t || ""; return d.innerHTML; }
+
+/* ---------------- ChatGPT 连接状态 ---------------- */
+let checking = false;
+async function checkConn() {
+  if (checking) return;
+  checking = true;
+  $("connDot").className = "pulse";
+  $("connText").textContent = "检测中…";
+  $("launchBtn").style.display = "none";
+  try {
+    const s = await apiJson("/api/chrome_status");
+    const cls = { chrome_off: "off", conflict: "off", not_logged_in: "nologin",
+                  ready: "ready" };
+    $("connDot").className = "pulse " + (cls[s.status] || "");
+    $("connText").textContent = s.detail;
+    $("launchBtn").style.display = s.status === "chrome_off" ? "inline-block" : "none";
+  } catch (e) {
+    $("connText").textContent = "检测失败";
+  }
+  checking = false;
+}
+async function launchChrome() {
+  $("connText").textContent = "正在启动专用 Chrome…";
+  $("launchBtn").style.display = "none";
+  let j;
+  try {
+    j = await apiJson("/api/launch_chrome", { method: "POST" });
+  } catch (e) {
+    alert(e.message);
+    checkConn();
+    return;
+  }
+  if (!j.ok) { alert(j.msg || "启动 Chrome 失败"); checkConn(); return; }
+  // 给 Chrome 一点启动时间再检测；未登录时去弹出的窗口里登录，登录完再点“检测”
+  setTimeout(checkConn, 4000);
+}
+renderPromptLibrary();
+checkConn();
+
+/* ---------------- 局部修改画板 ---------------- */
+let edImg = null, edSource = "", edTool = "brush", strokes = [], drawing = null;
+const canvas = $("editCanvas"), ctx = canvas.getContext("2d");
+
+function openEditor(imageName) {
+  if (curState !== "waiting_feedback") {
+    alert("局部修改只能在“等待点评”暂停时进行（每 5 轮暂停一次）"); return;
+  }
+  edSource = imageName; strokes = []; drawing = null;
+  $("editInstruction").value = "";
+  edImg = new Image();
+  edImg.onload = () => {
+    const cap = 1536, sc = Math.min(1, cap / Math.max(edImg.width, edImg.height));
+    canvas.width = Math.round(edImg.width * sc);
+    canvas.height = Math.round(edImg.height * sc);
+    render();
+    $("editor").style.display = "flex";
+  };
+  edImg.src = `/images/${sessId}/${imageName}`;
+}
+
+function closeEditor() { $("editor").style.display = "none"; }
+function setTool(t) {
+  edTool = t;
+  $("toolBrush").classList.toggle("active", t === "brush");
+  $("toolRect").classList.toggle("active", t === "rect");
+}
+function undoStroke() { strokes.pop(); render(); }
+function clearStrokes() { strokes = []; render(); }
+
+function render() {
+  ctx.drawImage(edImg, 0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = "rgba(255,40,40,.95)";
+  ctx.fillStyle = "rgba(255,40,40,.35)";
+  ctx.lineCap = ctx.lineJoin = "round";
+  for (const s of [...strokes, drawing].filter(Boolean)) {
+    if (s.tool === "brush") {
+      ctx.lineWidth = Math.max(14, canvas.width / 60);
+      ctx.beginPath();
+      s.pts.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+      ctx.stroke();
+    } else {
+      const x = Math.min(s.x0, s.x1), y = Math.min(s.y0, s.y1),
+            w = Math.abs(s.x1 - s.x0), h = Math.abs(s.y1 - s.y0);
+      ctx.lineWidth = 4;
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeRect(x, y, w, h);
+    }
+  }
+}
+
+function evPos(e) {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) * canvas.width / r.width,
+          (e.clientY - r.top) * canvas.height / r.height];
+}
+canvas.addEventListener("pointerdown", e => {
+  e.preventDefault(); canvas.setPointerCapture(e.pointerId);
+  const [x, y] = evPos(e);
+  drawing = edTool === "brush" ? { tool: "brush", pts: [[x, y]] }
+                               : { tool: "rect", x0: x, y0: y, x1: x, y1: y };
+});
+canvas.addEventListener("pointermove", e => {
+  if (!drawing) return;
+  const [x, y] = evPos(e);
+  if (drawing.tool === "brush") drawing.pts.push([x, y]);
+  else { drawing.x1 = x; drawing.y1 = y; }
+  render();
+});
+canvas.addEventListener("pointerup", () => {
+  if (drawing) { strokes.push(drawing); drawing = null; render(); }
+});
+
+async function submitEdit() {
+  const instruction = $("editInstruction").value.trim();
+  if (!strokes.length) { alert("请先用画笔或框选在图上标出要修改的区域"); return; }
+  if (!instruction) { alert("请写清楚圈出的区域要怎么改"); return; }
+  const j = await (await fetch("/api/regional_edit", { method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ source_image: edSource, instruction,
+                           marked: canvas.toDataURL("image/png") }) })).json();
+  if (!j.ok) { alert(j.msg); return; }
+  closeEditor();
+}
+
+poll();
+</script>
+</body>
+</html>

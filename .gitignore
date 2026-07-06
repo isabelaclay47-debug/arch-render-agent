@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 专用 Chrome 用户数据——内含 ChatGPT 登录会话，绝不提交
+chrome-profile/
+
+# 运行期产物：会话图、最终渲染图、服务日志
+workspace/
+
+# 编辑器 / 工具状态
+.omc/
+.vscode/
+.idea/
