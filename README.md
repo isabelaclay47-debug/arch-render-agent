@@ -10,12 +10,15 @@
 
 **前置条件**：Python 3.10+、Google Chrome、一个能在网页版 ChatGPT 生图的账号。
 
-### Windows（最省事）
-1. 双击 **`start_chrome.bat`** — 弹出一个专用 Chrome，在里面登录 `chatgpt.com`（只需登录一次，之后记住）。这个窗口整个过程**别关**，可最小化。
-2. 双击 **`run.bat`** — 自动装依赖、启动服务、打开操作页 http://127.0.0.1:5001 。
-3. 若 Chrome 不在默认安装路径，编辑 `start_chrome.bat` 里的路径即可。
+### Windows（最简单：双击一下全自动）
+**双击 `双击启动.bat`** 即可——它会自动检查 Python、装依赖、打开专用 Chrome、启动服务并打开操作页 http://127.0.0.1:5001 。首次运行会稍慢（装依赖 1–3 分钟），并弹出一个 Chrome 让你**登录一次 `chatgpt.com`**（这个窗口整个过程别关，可最小化）。
+> 没装 Python？脚本会自动打开下载页；安装时记得勾选 **“Add Python to PATH”**，装完再双击一次。
+> 想分步来的高级用户，也可以分别用 `start_chrome.bat` + `run.bat`。
 
-### macOS / Linux
+### macOS（双击一下全自动）
+**双击 `双击启动-Mac.command`** 即可（首次若提示“无法打开”，右键 → 打开 → 允许一次）。它会自动建环境、装依赖、打开专用 Chrome 让你登录 `chatgpt.com`、启动服务并打开操作页。
+
+### Linux / 手动方式
 ```bash
 # 1) 装依赖（首次）
 python3 -m venv .venv
