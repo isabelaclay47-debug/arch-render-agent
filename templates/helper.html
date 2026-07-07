@@ -23,7 +23,7 @@
 <div class="card">
   <div class="engine">
     <button id="engChat" class="on" onclick="setEngine('chat')">ChatGPT（专业级 · 需账号+VPN）</button>
-    <button id="engLocal" onclick="setEngine('local')">本地（免账号/免 VPN）</button>
+    <button id="engLocal" onclick="setEngine('local')">本地大模型（离线识图 · 免账号/VPN）</button>
   </div>
   <div id="engHint" class="muted"></div>
 </div>
@@ -53,7 +53,18 @@
   <label class="muted">中文提示词</label><pre id="zh"></pre>
   <label class="muted">英文提示词（复制这段拿去生图）</label><pre id="en"></pre>
   <button class="go" onclick="copyEn()" style="background:var(--ink)">📋 复制英文提示词</button>
+  <!-- 需求④：对提示词不满意，可继续沟通、在这版基础上改 -->
+  <div style="margin-top:14px;border-top:1px dashed var(--sand);padding-top:12px">
+    <label class="muted">不满意？说一句让我改（会在上面这版基础上修订，不推倒重来）</label>
+    <textarea id="refineText" placeholder="例如：太商业了，我要更安静的住宅感；光线改成清晨；去掉行人。"></textarea>
+    <button class="go" onclick="refinePrompt()" style="margin-top:8px;background:var(--wine)">↻ 按我的意见改一版</button>
+  </div>
 </div>
+
+<div id="lightbox" onclick="this.style.display='none'"
+     style="position:fixed;inset:0;background:rgba(58,53,47,.94);display:none;
+            align-items:center;justify-content:center;z-index:99;cursor:zoom-out">
+  <img id="lightboxImg" style="max-width:96vw;max-height:96vh;border-radius:2px"></div>
 
 <script src="/static/helper.js"></script>
 </body></html>

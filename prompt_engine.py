@@ -362,8 +362,24 @@ def extract_questions(text: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def helper_refine_prompt(draft: str) -> str:
-    """助手页精修：让导演看用户上传的图 + 草稿，产出专业版三段提示词。"""
+def helper_refine_prompt(draft: str, prev_zh: str = "", feedback: str = "") -> str:
+    """助手页精修：让导演看用户上传的图 + 草稿，产出专业版三段提示词。
+
+    若带上一版中文提示词 prev_zh + 用户不满意的意见 feedback，则进入"改稿"模式：
+    在上一版基础上按意见修订，而不是从头再来（对应需求④：对提示词不满意能继续沟通）。
+    """
+    if prev_zh.strip() and feedback.strip():
+        return f"""你是资深建筑可视化提示词导演。这是你上一版给用户的中文提示词：
+
+【上一版提示词】
+{prev_zh}
+
+用户看后**不满意**，提出如下意见，请据此在上一版基础上修订（保留仍合理的部分，只改他在意的地方），产出更贴合他意图的新版：
+
+【用户意见】
+{feedback}
+
+如仍有底图，请结合图面细节一并考虑。{_BILINGUAL_OUTPUT_SPEC}"""
     draft_block = f"\n\n【用户的初步想法/草稿】\n{draft}" if draft.strip() else ""
     return f"""你是资深建筑可视化提示词导演。用户上传了一张图作为底图参照。请**仔细看图**，
 识别建筑类型、材质、光线、构图与风格，结合用户草稿，产出一份专业、具体、可执行的生图提示词。{draft_block}
