@@ -28,7 +28,31 @@ function onPick(f){
   $("dropHint").textContent="已选择图片（可点击重选）";
   $("dropPrev").innerHTML=`<img src="${URL.createObjectURL(f)}">`;
   $("descBox").textContent="";
+  $("toRenderBtn").style.display="block";        // 有图了才能发给渲染器
   if(engine==="local") runLocalVision(f);
+}
+
+// ③ 把当前图发给渲染器当底图，跳转回主页自动接收
+async function sendToRender(){
+  if(!pickedFile){ alert("先选一张图"); return; }
+  const fd=new FormData();
+  fd.append("to","render");
+  fd.append("image",pickedFile);
+  const j=await (await fetch("/api/handoff",{method:"POST",body:fd})).json();
+  if(!j.ok){ alert(j.msg||"发送失败"); return; }
+  window.location="/";
+}
+
+// 页面加载时接收从渲染器发来的底图
+async function receiveHandoff(){
+  try{
+    const r=await fetch("/api/handoff/helper");
+    if(r.status!==200) return;
+    const blob=await r.blob();
+    onPick(new File([blob],"底图.jpg",{type:blob.type||"image/jpeg"}));
+    await fetch("/api/handoff_clear",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({to:"helper"})});
+  }catch(e){ /* 无待接收则忽略 */ }
 }
 
 // 拖拽
@@ -105,3 +129,4 @@ async function runLocalVision(file){
   }
 }
 setEngine("chat");
+receiveHandoff();

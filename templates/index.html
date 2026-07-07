@@ -221,6 +221,44 @@
 
   /* 拖拽上传高亮 */
   .drop.dragover { border-color: var(--wine); color: var(--wine); background: #fff; }
+
+  /* 历史管理：重点条 / 收藏星 / 删除 / 回收站 */
+  .fav-strip { border: 1px solid var(--gold); background: #FBF7EC; border-radius: 4px;
+               padding: 10px 12px; margin-bottom: 12px; }
+  .fav-strip .fav-title { font-size: 12px; color: var(--gold); font-weight: 600;
+                          letter-spacing: 1px; margin-bottom: 8px; }
+  .fav-thumbs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+  .fav-thumbs figure { margin: 0; flex: none; width: 88px; }
+  .fav-thumbs img { width: 88px; height: 66px; object-fit: cover; border-radius: 2px;
+                    border: 1px solid var(--gold); cursor: zoom-in; display: block; }
+  .hist-sess { position: relative; }
+  .hist-del-sess { position: absolute; right: 0; top: 9px; border: 1px solid var(--sand);
+                   background: #fff; color: var(--taupe); border-radius: 3px; font-size: 11px;
+                   padding: 2px 8px; cursor: pointer; }
+  .hist-del-sess:hover { color: var(--brick); border-color: var(--brick); }
+  .hist-req { color: var(--ink); font-size: 12px; line-height: 1.55; margin: 2px 0 8px;
+              white-space: pre-wrap; word-break: break-word; }
+  .hist-req .noreq { color: var(--taupe); font-style: italic; }
+  .hist-thumbs figure { position: relative; }
+  .hist-star, .hist-del-img { position: absolute; top: 3px; width: 20px; height: 20px;
+    border: 0; border-radius: 50%; cursor: pointer; font-size: 12px; line-height: 20px;
+    padding: 0; text-align: center; background: rgba(255,255,255,.9); }
+  .hist-star { left: 3px; color: var(--taupe); }
+  .hist-star.on { color: var(--gold); }
+  .hist-del-img { right: 3px; color: var(--taupe); }
+  .hist-del-img:hover { color: var(--brick); }
+  .hist-send { width: 100%; margin-top: 2px; padding: 3px 0; font-size: 10.5px; font-weight: 400;
+               border: 1px solid var(--sand); background: #fff; color: var(--taupe);
+               border-radius: 3px; }
+  .hist-send:hover { color: var(--ink); border-color: var(--ink); background: var(--paper2); }
+  #trashPanel { margin-top: 10px; border-top: 1px dashed var(--sand); padding-top: 10px; }
+  .trash-item { display: flex; align-items: center; gap: 8px; font-size: 11.5px;
+                color: var(--ink); padding: 4px 0; }
+  .trash-item img { width: 46px; height: 34px; object-fit: cover; border-radius: 2px;
+                    border: 1px solid var(--sand); }
+  .trash-item .grow { flex: 1; }
+  .trash-item button { font-size: 11px; padding: 3px 9px; border: 1px solid var(--sand);
+                       background: #fff; border-radius: 3px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -309,12 +347,16 @@
         开始前请确认右上角状态灯为绿色（ChatGPT 已登录）——未启动时点「启动 Chrome 去登录」</p>
     </div>
 
-    <!-- 历史成图：挑一张当新底图（痛点三） -->
+    <!-- 历史成图：挑一张当新底图（痛点三）+ 重点/删除/回收站 -->
     <div class="card" id="historyCard">
       <h2>Ⅰ·5 · 历史成图 <small>— 挑一张满意的当新底图，接着迭代</small></h2>
+      <div id="favStrip" class="fav-strip" style="display:none"></div>
       <div id="historyList"><div class="hist-empty">加载历史中…</div></div>
-      <button class="btn-ghost" type="button" onclick="loadHistory()"
-              style="margin-top:10px">↻ 刷新历史</button>
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn-ghost" type="button" onclick="loadHistory()">↻ 刷新</button>
+        <button class="btn-ghost" type="button" onclick="toggleTrash()">🗑 回收站</button>
+      </div>
+      <div id="trashPanel" style="display:none"></div>
     </div>
 
     <!-- 小贴士 -->
@@ -440,9 +482,10 @@ let sessId = null, rendered = 0, curState = "idle", confirmLoaded = false, lates
 let selectedBaseFrom = "", histState = "";   // 痛点三：历史成图当新底图
 const $ = id => document.getElementById(id);
 
-/* ---------------- 历史成图（痛点三） ---------------- */
+/* ---------------- 历史成图（痛点三）+ 重点/删除/回收站 ---------------- */
 async function loadHistory() {
   const box = $("historyList");
+  loadFavorites();
   try {
     const { sessions } = await apiJson("/api/history");
     if (!sessions.length) {
@@ -450,25 +493,129 @@ async function loadHistory() {
       return;
     }
     box.innerHTML = sessions.map(s => {
+      const favSet = new Set(s.favorites || []);
       const thumbs = s.images.map(img => {
         const url = `/images/${s.session}/${img}`;
+        const on = favSet.has(img) ? " on" : "";
         return `<figure>
           <img src="${url}" onclick="zoom('${url}')">
+          <button class="hist-star${on}" title="标为重点底图" onclick="toggleFav('${s.session}','${img}',this)">★</button>
+          <button class="hist-del-img" title="删除这张（进回收站）" onclick="delHistory('${s.session}','${img}')">×</button>
           <button class="hist-use" onclick="useAsBase('${s.session}','${img}')">用作底图</button>
+          <button class="hist-send" onclick="sendToHelper('${s.session}','${img}')">→ 发给助手</button>
         </figure>`;
       }).join("");
       const when = esc(s.created || s.session);
       const req = s.requirement
-        ? esc(s.requirement.slice(0, 46)) + (s.requirement.length > 46 ? "…" : "")
-        : "（无需求记录）";
+        ? `<div class="hist-req">${esc(s.requirement)}</div>`
+        : `<div class="hist-req"><span class="noreq">（无需求记录）</span></div>`;
       return `<div class="hist-sess">
-        <div class="hist-head"><b>${when}</b> · ${s.count} 张　${req}</div>
+        <button class="hist-del-sess" title="删除整个会话（进回收站）" onclick="delHistory('${s.session}','')">🗑 删除</button>
+        <div class="hist-head"><b>${when}</b> · ${s.count} 张</div>
+        ${req}
         <div class="hist-thumbs">${thumbs}</div>
       </div>`;
     }).join("");
   } catch (e) {
     box.innerHTML = `<div class="hist-empty">历史加载失败：${esc(e.message)}</div>`;
   }
+}
+
+// ② 顶部「重点」条：把标星的底图集中置顶，一键用作底图
+async function loadFavorites() {
+  const strip = $("favStrip");
+  try {
+    const { favorites } = await apiJson("/api/favorites");
+    if (!favorites.length) { strip.style.display = "none"; return; }
+    strip.style.display = "block";
+    strip.innerHTML = `<div class="fav-title">⭐ 重点底图（${favorites.length}）</div>` +
+      `<div class="fav-thumbs">` + favorites.map(f => {
+        const url = `/images/${f.session}/${f.image}`;
+        return `<figure>
+          <img src="${url}" onclick="zoom('${url}')">
+          <button class="hist-use" onclick="useAsBase('${f.session}','${f.image}')">用作底图</button>
+        </figure>`;
+      }).join("") + `</div>`;
+  } catch (e) { strip.style.display = "none"; }
+}
+
+async function toggleFav(sess, img, btn) {
+  const on = !btn.classList.contains("on");
+  const j = await (await fetch("/api/favorite", { method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ session: sess, image: img, on }) })).json();
+  if (j.ok) { btn.classList.toggle("on", on); loadFavorites(); }
+}
+
+async function delHistory(sess, img) {
+  const what = img ? "这张图" : "整个会话（含所有过程图）";
+  if (!confirm(`确定删除${what}？可在「回收站」里恢复。`)) return;
+  const j = await (await fetch("/api/history_delete", { method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ session: sess, image: img }) })).json();
+  if (!j.ok) { alert(j.msg || "删除失败"); return; }
+  loadHistory();
+  if (trashOpen) loadTrash();
+}
+
+/* ---------------- 回收站 ---------------- */
+let trashOpen = false;
+function toggleTrash() {
+  trashOpen = !trashOpen;
+  $("trashPanel").style.display = trashOpen ? "block" : "none";
+  if (trashOpen) loadTrash();
+}
+async function loadTrash() {
+  const p = $("trashPanel");
+  try {
+    const { items } = await apiJson("/api/trash");
+    if (!items.length) { p.innerHTML = `<div class="hist-empty">回收站是空的。</div>`; return; }
+    p.innerHTML = items.map(it => {
+      const label = (it.type === "image" ? "单张" : "整会话") + " · " + esc(it.session);
+      return `<div class="trash-item">
+        ${it.thumb ? `<img src="${it.thumb}">` : ""}
+        <span class="grow">${label}<br><small style="color:var(--taupe)">${esc(it.when||"")}</small></span>
+        <button onclick="restoreTrash('${it.id}')">恢复</button>
+      </div>`;
+    }).join("") +
+      `<button class="btn-ghost" style="margin-top:8px" onclick="emptyTrash()">彻底清空回收站</button>`;
+  } catch (e) { p.innerHTML = `<div class="hist-empty">回收站加载失败：${esc(e.message)}</div>`; }
+}
+async function restoreTrash(id) {
+  const j = await (await fetch("/api/trash_restore", { method: "POST",
+    headers: {"Content-Type":"application/json"}, body: JSON.stringify({ id }) })).json();
+  if (!j.ok) { alert(j.msg || "恢复失败"); return; }
+  loadTrash(); loadHistory();
+}
+async function emptyTrash() {
+  if (!confirm("彻底清空回收站？此操作不可恢复。")) return;
+  await fetch("/api/trash_empty", { method: "POST" });
+  loadTrash();
+}
+
+/* ---------------- ③ 两页互传底图 ---------------- */
+async function sendToHelper(sess, img) {
+  const fd = new FormData();
+  fd.append("to", "helper");
+  fd.append("from", sess + "/" + img);
+  const j = await (await fetch("/api/handoff", { method: "POST", body: fd })).json();
+  if (!j.ok) { alert(j.msg || "发送失败"); return; }
+  window.location = "/helper";
+}
+// 页面加载时接收从提示词助手发来的底图（当成已上传的原图，不依赖服务器暂存文件常驻）
+async function receiveHandoff() {
+  try {
+    const r = await fetch("/api/handoff/render");
+    if (r.status !== 200) return;
+    const blob = await r.blob();
+    const file = new File([blob], "helper底图.jpg", { type: blob.type || "image/jpeg" });
+    const dt = new DataTransfer(); dt.items.add(file);
+    $("baseInput").files = dt.files;
+    preview($("baseInput"), "baseThumbs");
+    $("baseHint").textContent = "已接收提示词助手发来的底图（可点击重选）";
+    await fetch("/api/handoff_clear", { method: "POST",
+      headers: {"Content-Type":"application/json"}, body: JSON.stringify({ to: "render" }) });
+  } catch (e) { /* 无待接收则忽略 */ }
 }
 
 function useAsBase(sess, img) {
@@ -822,6 +969,7 @@ async function launchChrome() {
 renderPromptLibrary();
 checkConn();
 loadHistory();
+receiveHandoff();
 
 /* ---------------- 局部修改画板 ---------------- */
 let edImg = null, edSource = "", edTool = "brush", strokes = [], drawing = null, erasing = false;
