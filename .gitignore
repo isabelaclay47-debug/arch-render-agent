@@ -16,6 +16,10 @@ logs/
 .supervisor_pid
 .supervisor_stop
 
+# 助手页本地模型与运行库（体积大，安装时下载）
+models/
+static/vendor/
+
 # Serena 缓存
 .serena/
 

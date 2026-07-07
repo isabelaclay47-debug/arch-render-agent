@@ -33,6 +33,10 @@ else
   echo "[提示] 没找到 Google Chrome。可稍后在网页里点“启动 Chrome 去登录”，或先安装 Chrome。"
 fi
 
+# ---- 3.5) 检查助手页本地模型资产（首次较慢，缺失不影响主功能）----
+echo "检查助手页本地模型资产（首次较慢，缺失不影响主功能）..."
+.venv/bin/python scripts/fetch_assets.py || true
+
 # ---- 4) 起"常驻守护服务"（脱离本窗口，崩溃自动重启）----
 # nohup + disown：关掉终端 / 关掉 Claude 都不会中断服务。
 echo

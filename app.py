@@ -734,6 +734,16 @@ def helper_page():
     return render_template("helper.html")
 
 
+@app.route("/vendor/<path:sub>")
+def vendor_assets(sub):
+    return send_from_directory(os.path.join(APP_DIR, "static", "vendor"), sub)
+
+
+@app.route("/models/<path:sub>")
+def model_assets(sub):
+    return send_from_directory(os.path.join(APP_DIR, "models"), sub)
+
+
 @app.route("/api/helper_build", methods=["POST"])
 def api_helper_build():
     """助手页「本地模式」：把想法 + 识图描述 + 勾选模块本地拼装成中英提示词。不联网。"""

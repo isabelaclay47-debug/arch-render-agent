@@ -45,6 +45,10 @@ if defined CHROME (
   echo 你可以稍后在网页里点“启动 Chrome 去登录”，或先安装 Google Chrome。
 )
 
+REM ---- 3.5) 检查助手页本地模型资产（首次较慢，缺失不影响主功能）----
+echo 检查助手页本地模型资产（首次较慢，缺失不影响主功能）...
+".venv-win\Scripts\python.exe" scripts\fetch_assets.py
+
 REM ---- 4) 起"常驻守护服务"（脱离本窗口，崩溃自动重启）----
 REM 用 pythonw（无控制台）+ start 分离，关掉这个黑框 / 关掉 Claude 都不会中断服务。
 set "PYW=.venv-win\Scripts\pythonw.exe"
