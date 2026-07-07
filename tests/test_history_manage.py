@@ -90,6 +90,18 @@ def test_delete_single_image_and_empty_trash(tmp_path, monkeypatch):
     assert leftovers == []
 
 
+def test_delete_rejects_path_traversal(tmp_path, monkeypatch):
+    c, ws = _isolate(tmp_path, monkeypatch)
+    _make_session(ws, "real")
+    sentinel = tmp_path / "OUTSIDE.txt"          # workspace 之外的东西
+    sentinel.write_text("x")
+    for evil in ["..", "../", "..\\", "../../", "_trash"]:
+        r = c.post("/api/history_delete", json={"session": evil})
+        assert r.status_code in (400, 404), f"{evil!r} 未被拦截"
+    assert sentinel.exists()                     # 外部文件毫发无损
+    assert (tmp_path / "workspace").exists()      # workspace 本身没被移走
+
+
 def test_handoff_roundtrip(tmp_path, monkeypatch):
     c, ws = _isolate(tmp_path, monkeypatch)
     _make_session(ws, "sessH")

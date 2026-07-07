@@ -196,6 +196,24 @@ def save_image_optimized_from_path(src_path: str, dest_noext: str) -> str:
     return _optimize_image(Image.open(src_path), dest_noext)
 
 
+def _safe_name(n) -> str:
+    """把浏览器传来的单段名字消毒成安全的 workspace 子名：
+    去目录、拒绝 . / .. / 空 / 下划线开头 / 含分隔符。非法返回空串。"""
+    n = os.path.basename(str(n or ""))
+    if not n or n in (".", "..") or n.startswith("_") or "/" in n or "\\" in n:
+        return ""
+    return n
+
+
+def _within_workspace(path: str) -> bool:
+    """确认解析后的真实路径仍落在 workspace 内（防残余穿越/符号链接）。"""
+    try:
+        root = os.path.realpath(WORKSPACE)
+        return os.path.commonpath([root, os.path.realpath(path)]) == root
+    except ValueError:
+        return False
+
+
 def _resolve_workspace_image(rel: str) -> str:
     """把浏览器传来的 "会话/图名" 安全地解析为 workspace 内的真实路径。
     只取两段 basename 拼进 WORKSPACE，并做 realpath 包含校验，杜绝 ../ 路径穿越；
@@ -880,8 +898,8 @@ def api_favorites():
 def api_favorite():
     """收藏/取消收藏一张图。入参 {session, image, on}。"""
     data = request.get_json(force=True, silent=True) or {}
-    sess = os.path.basename(str(data.get("session", "")))
-    img = os.path.basename(str(data.get("image", "")))
+    sess = _safe_name(data.get("session"))
+    img = _safe_name(data.get("image"))
     on = bool(data.get("on", True))
     if not sess or not img:
         return jsonify({"ok": False, "msg": "缺少 session/image"}), 400
@@ -927,12 +945,14 @@ def _drop_favorites(session, image=None):
 def api_history_delete():
     """把一个会话或单张图移入回收站（不真删，可恢复）。入参 {session[, image]}。"""
     data = request.get_json(force=True, silent=True) or {}
-    sess = os.path.basename(str(data.get("session", "")))
-    image = os.path.basename(str(data.get("image", ""))) if data.get("image") else ""
-    if not sess or sess.startswith("_"):
+    sess = _safe_name(data.get("session"))
+    image = _safe_name(data.get("image")) if data.get("image") else ""
+    if not sess:
         return jsonify({"ok": False, "msg": "无效的会话"}), 400
+    if data.get("image") and not image:
+        return jsonify({"ok": False, "msg": "无效的图片名"}), 400
     sess_dir = os.path.join(WORKSPACE, sess)
-    if not os.path.isdir(sess_dir):
+    if not os.path.isdir(sess_dir) or not _within_workspace(sess_dir):
         return jsonify({"ok": False, "msg": "找不到该会话"}), 404
     tid = datetime.now().strftime("%Y%m%d%H%M%S_") + os.urandom(2).hex()
     dst = os.path.join(TRASH_DIR, tid)
