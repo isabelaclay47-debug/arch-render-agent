@@ -749,6 +749,54 @@ def api_helper_build():
     return jsonify({"ok": True, **out})
 
 
+def _helper_chatgpt_ready() -> bool:
+    """轻量探测：CDP 端口能连上即视为可用（真正登录与否交给精修时报错）。"""
+    try:
+        _local_get(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+@app.route("/api/helper_refine", methods=["POST"])
+def api_helper_refine():
+    """助手页「ChatGPT 引擎」：借导演对话看图 + 扩写，返回专业版中英提示词。
+    不干扰主渲染：仅在无进行中的渲染时可用。"""
+    if S["state"] in ("connecting", "running", "waiting_confirm",
+                      "waiting_clarification", "waiting_feedback", "editing"):
+        return jsonify({"ok": False, "msg": "当前正在渲染，稍后再用 ChatGPT 精修"}), 409
+    if not _helper_chatgpt_ready():
+        return jsonify({"ok": False,
+                        "msg": "没检测到可用的 ChatGPT（需已启动专用 Chrome 并登录），可切到「本地」模式"}), 400
+
+    draft = (request.form.get("draft_prompt") or "").strip()
+    img = request.files.get("image")
+    tmp_dir = os.path.join(WORKSPACE, "_helper")
+    os.makedirs(tmp_dir, exist_ok=True)
+    img_paths = []
+    if img and img.filename:
+        try:
+            img_paths.append(save_image_optimized(
+                img, os.path.join(tmp_dir, datetime.now().strftime("h_%H%M%S"))))
+        except Exception as e:
+            return jsonify({"ok": False, "msg": f"图片无法读取：{e}"}), 400
+
+    client = ChatGPTClient(log=log)
+    try:
+        client.connect(director_only=True)
+        reply = client.send(client.director_page,
+                            pe.helper_refine_prompt(draft), image_paths=img_paths)
+        parsed = pe.parse_director_reply(reply)
+        return jsonify({"ok": True,
+                        "understanding_zh": parsed["understanding"],
+                        "prompt_zh": parsed["prompt_zh"],
+                        "prompt_en": parsed["prompt_en"]})
+    except ChatGPTError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 502
+    finally:
+        client.close()
+
+
 @app.route("/api/history")
 def api_history():
     """历史成图列表（痛点三）：扫 workspace，列出每个出过图的会话及其所有成图，
