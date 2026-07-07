@@ -729,6 +729,26 @@ def api_finish_now():
     return jsonify({"ok": True})
 
 
+@app.route("/helper")
+def helper_page():
+    return render_template("helper.html")
+
+
+@app.route("/api/helper_build", methods=["POST"])
+def api_helper_build():
+    """助手页「本地模式」：把想法 + 识图描述 + 勾选模块本地拼装成中英提示词。不联网。"""
+    data = request.get_json(force=True, silent=True) or {}
+    presets = data.get("presets") or []
+    if not isinstance(presets, list):
+        presets = []
+    out = pe.build_prompt_locally(
+        intent=str(data.get("intent", "")),
+        image_desc=str(data.get("image_desc", "")),
+        preset_texts=[str(p) for p in presets],
+    )
+    return jsonify({"ok": True, **out})
+
+
 @app.route("/api/history")
 def api_history():
     """历史成图列表（痛点三）：扫 workspace，列出每个出过图的会话及其所有成图，
