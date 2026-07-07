@@ -218,6 +218,9 @@
               border: 1px solid var(--sand); background: #fff; color: var(--taupe);
               border-radius: 3px; letter-spacing: .5px; }
   .hist-use:hover { color: var(--cream); background: var(--wine); border-color: var(--wine); }
+
+  /* 拖拽上传高亮 */
+  .drop.dragover { border-color: var(--wine); color: var(--wine); background: #fff; }
 </style>
 </head>
 <body>
@@ -262,14 +265,14 @@
       </div>
 
       <label>原图 <small>— 必传，建筑形体将被严格锁定</small></label>
-      <div class="drop" onclick="baseInput.click()">
+      <div class="drop" id="baseDrop" onclick="baseInput.click()">
         <input type="file" id="baseInput" accept="image/*" onchange="preview(this,'baseThumbs')">
         <span id="baseHint">点击选择原图</span>
         <div class="thumbs" id="baseThumbs"></div>
       </div>
 
       <label>意向图 <small>— 可选多张，仅借鉴氛围 / 材质 / 光线</small></label>
-      <div class="drop" onclick="refInput.click()">
+      <div class="drop" id="refDrop" onclick="refInput.click()">
         <input type="file" id="refInput" accept="image/*" multiple onchange="preview(this,'refThumbs')">
         <span id="refHint">点击选择意向图</span>
         <div class="thumbs" id="refThumbs"></div>
@@ -605,6 +608,28 @@ function preview(input, boxId) {
     input.files.length ? `已选 ${input.files.length} 张（点击可重选）` :
     (boxId === "baseThumbs" ? "点击选择原图" : "点击选择意向图");
 }
+
+// 拖拽上传：把拖入的文件塞进对应 <input type=file> 再走既有 preview
+function enableDrop(dropId, input, boxId) {
+  const drop = $(dropId);
+  ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation(); drop.classList.add("dragover");
+  }));
+  ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation(); drop.classList.remove("dragover");
+  }));
+  drop.addEventListener("drop", e => {
+    const files = e.dataTransfer.files;
+    if (!files || !files.length) return;
+    const dt = new DataTransfer();
+    const list = input.multiple ? files : [files[0]];
+    for (const f of list) if (f.type.startsWith("image/")) dt.items.add(f);
+    input.files = dt.files;
+    preview(input, boxId);
+  });
+}
+enableDrop("baseDrop", $("baseInput"), "baseThumbs");
+enableDrop("refDrop", $("refInput"), "refThumbs");
 
 function picked(name) { return document.querySelector(`input[name=${name}]:checked`).value; }
 
