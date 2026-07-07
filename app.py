@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from datetime import datetime
 
@@ -20,7 +21,7 @@ from flask import Flask, jsonify, render_template, request, send_from_directory
 from PIL import Image
 
 import prompt_engine as pe
-from chatgpt_client import CDP_PORT, ChatGPTClient, ChatGPTError
+from chatgpt_client import CDP_PORT, ChatGPTClient, ChatGPTError, GenStalledError
 
 try:
     import winreg
@@ -241,6 +242,25 @@ def add_item(i, image, kind, analysis, verdict, prompt):
                            "analysis": analysis, "verdict": verdict, "prompt": prompt})
 
 
+def _update_meta(sess_dir: str, **fields):
+    """把若干字段并进会话 meta.json（历史列表要用：建筑师初始命令 + 最后一版提示词）。
+    只写入非空字段，容忍文件缺失/损坏。对应需求②。"""
+    mp = os.path.join(sess_dir, "meta.json")
+    meta = {}
+    if os.path.isfile(mp):
+        try:
+            with open(mp, encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            meta = {}
+    meta.update({k: v for k, v in fields.items() if v})
+    try:
+        with open(mp, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 # ---------------- 主循环线程 ----------------
 
 def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: str,
@@ -347,6 +367,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             S["state"] = "running"
             S["understanding"] = ""
             S["prompt_zh"] = ""
+        _update_meta(sess_dir, last_prompt_zh=prompt_zh, last_prompt_en=prompt)
         log("提示词已确认，开始生图。")
 
         # fidelity_base：QC 忠实性参照（新图始终和它对比查偏移）。初始=原图；
@@ -377,12 +398,21 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                         image_paths=[gen_base], expect_image=True)
             img_path = os.path.join(sess_dir, f"iter_{i:02d}.png")
             if not client.download_last_image(client.gen_page, img_path):
-                raise ChatGPTError(f"第 {i} 轮没有拿到生成图，可能生图额度已用尽。")
+                raise GenStalledError(f"第 {i} 轮似乎出图了但没抓到图片（页面可能假死）。")
             last_gen = img_path
             log(f"第 {i} 轮出图完成，对比原图检查篡改与画质…")
-            qc_reply = client.send(client.director_page, pe.qc_and_revise_prompt(i),
-                                   image_paths=[fidelity_base, img_path])
-            parsed = pe.parse_director_reply(qc_reply)
+            # 图已成功落盘。QC（导演对话）若因网页异常失败，绝不能把这张图和整个会话一起丢掉——
+            # 保留成图、给个兜底结论、下一轮从原图重画即可（需求③/⑦：会话不结束、成果不丢）。
+            try:
+                qc_reply = client.send(client.director_page, pe.qc_and_revise_prompt(i),
+                                       image_paths=[fidelity_base, img_path])
+                parsed = pe.parse_director_reply(qc_reply)
+            except ChatGPTError as e:
+                log(f"⚠ 出图成功但篡改检查时 ChatGPT 未响应（{e}）——已保留此图，下一轮从原图重画。")
+                parsed = {"new_prompt": "", "fidelity": "", "next_step": "重画",
+                          "refine_instruction": "",
+                          "analysis": "（本轮出图成功，但对比检查时 ChatGPT 未响应，未能生成篡改报告）",
+                          "verdict": "已保留此图，检查未完成"}
             if parsed["new_prompt"]:
                 prompt = parsed["new_prompt"]  # 存好完整提示词，回退重画时用
             # 决定下一轮模式：形体明显篡改 或 导演判定需重画 → 从原图重画；否则精修
@@ -399,6 +429,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             add_item(i, f"iter_{i:02d}.png", "auto",
                      parsed["analysis"] or "（未解析出分析内容）",
                      parsed["verdict"], prompt)
+            _update_meta(sess_dir, last_prompt_zh=prompt_zh, last_prompt_en=prompt)
             log(f"第 {i} 轮检查完成（下一轮将{mode_label}）：{(parsed['verdict'] or '无结论')[:80]}")
 
         def edit_round(edit):
@@ -417,7 +448,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                         image_paths=[src, marked], expect_image=True)
             img_path = os.path.join(sess_dir, f"iter_{i:02d}.png")
             if not client.download_last_image(client.gen_page, img_path):
-                raise ChatGPTError(f"局部修改第 {i} 轮没有拿到生成图。")
+                raise GenStalledError(f"局部修改第 {i} 轮似乎出图了但没抓到图片（页面可能假死）。")
             log("局部修改出图完成，检查标记区域外是否被动…")
             qc_reply = client.send(client.director_page,
                                    pe.regional_qc_message(instruction),
@@ -433,6 +464,30 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             refine_instruction = ""
             log(f"局部修改检查完成：{(parsed['verdict'] or '无结论')[:80]}")
 
+        def run_step_with_recovery(step_fn) -> bool:
+            """执行一轮生成；若生图多次自愈仍失败(GenStalledError)，停在 'stalled'
+            可恢复状态等用户点「刷新/重试本轮」或「提前结束」，绝不让会话结束（需求③/⑦）。
+            返回 True 表示用户选择结束任务。"""
+            while True:
+                try:
+                    step_fn()
+                    return False
+                except GenStalledError as e:
+                    with _lock:
+                        S["state"] = "stalled"
+                        S["error"] = str(e)
+                    log(f"⚠ 已暂停但未结束：{e}")
+                    _nudge.clear()
+                    while not _nudge.is_set() and not _finish_now.is_set():
+                        _nudge.wait(timeout=1.0)
+                    if _finish_now.is_set():
+                        return True
+                    _nudge.clear()
+                    with _lock:
+                        S["state"] = "running"
+                        S["error"] = ""
+                    log("收到重试指令，重开 ChatGPT 对话再生成一次…")
+
         finished = False
         while not finished:
             # 一批自动迭代：每 review_every 张暂停一次等点评（建筑师在界面上设定）
@@ -440,7 +495,9 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                 i += 1
                 with _lock:
                     S["iteration"] = i
-                gen_round()
+                if run_step_with_recovery(gen_round):
+                    finished = True
+                    break
                 if _finish_now.is_set():
                     finished = True
                     break
@@ -463,7 +520,10 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                     i += 1
                     with _lock:
                         S["iteration"] = i
-                    edit_round(_feedback["edit"])
+                    edit = _feedback["edit"]
+                    if run_step_with_recovery(lambda: edit_round(edit)):
+                        finished = True
+                        break
                     continue  # 回到点评阶段
                 # type == continue：带点评继续自动迭代
                 with _lock:
@@ -492,6 +552,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                         prompt = parsed["new_prompt"]
                         if parsed["prompt_zh"]:
                             prompt_zh = parsed["prompt_zh"]
+                        _update_meta(sess_dir, last_prompt_zh=prompt_zh, last_prompt_en=prompt)
                         log("提示词已按点评修订。")
                     else:
                         log("警告：点评后未解析出新提示词，沿用上一版。")
@@ -731,10 +792,13 @@ def api_launch_chrome():
 
 @app.route("/api/nudge", methods=["POST"])
 def api_nudge():
-    """ChatGPT 网页卡死时的人工干预：让程序立刻刷新页面重新检查，然后继续任务。"""
-    if S["state"] not in ("connecting", "running", "editing"):
+    """ChatGPT 网页卡死时的人工干预：正在等待时刷新重查；'stalled' 暂停时重试本轮。"""
+    if S["state"] not in ("connecting", "running", "editing", "stalled"):
         return jsonify({"ok": False, "msg": "现在没有正在等待的浏览器操作"}), 400
-    log("收到人工干预：将刷新 ChatGPT 页面并重新检查结果。")
+    if S["state"] == "stalled":
+        log("收到重试指令：将重开 ChatGPT 对话再生成一次。")
+    else:
+        log("收到人工干预：将刷新 ChatGPT 页面并重新检查结果。")
     _nudge.set()
     return jsonify({"ok": True})
 
@@ -798,6 +862,9 @@ def api_helper_refine():
                         "msg": "没检测到可用的 ChatGPT（需已启动专用 Chrome 并登录），可切到「本地」模式"}), 400
 
     draft = (request.form.get("draft_prompt") or "").strip()
+    # 改稿模式（需求④）：带上一版提示词 + 用户不满意的意见 → 在原版基础上修订
+    prev_zh = (request.form.get("prev_zh") or "").strip()
+    feedback = (request.form.get("feedback") or "").strip()
     img = request.files.get("image")
     tmp_dir = os.path.join(WORKSPACE, "_helper")
     os.makedirs(tmp_dir, exist_ok=True)
@@ -813,7 +880,8 @@ def api_helper_refine():
     try:
         client.connect(director_only=True)
         reply = client.send(client.director_page,
-                            pe.helper_refine_prompt(draft), image_paths=img_paths)
+                            pe.helper_refine_prompt(draft, prev_zh, feedback),
+                            image_paths=img_paths)
         parsed = pe.parse_director_reply(reply)
         return jsonify({"ok": True,
                         "understanding_zh": parsed["understanding"],
@@ -823,6 +891,159 @@ def api_helper_refine():
         return jsonify({"ok": False, "msg": str(e)}), 502
     finally:
         client.close()
+
+
+# ======================================================================
+#  本地视觉模型（Ollama）——真·本地部署、离线、零 API key 的识图引擎（需求④）
+#  ChatGPT 是首选；这条是没 VPN/没账号时的兜底。未装 Ollama 时优雅降级 + 给一键指引。
+# ======================================================================
+OLLAMA_URL = "http://127.0.0.1:11434"
+# 常见的本地视觉模型名（按识图效果优先排序）；按名字包含匹配已 pull 的模型
+VISION_MODEL_HINTS = ("qwen2.5-vl", "qwen2-vl", "minicpm-v", "llama3.2-vision",
+                      "llava", "bakllava", "moondream", "gemma3")
+VISION_DESCRIBE_PROMPT = (
+    "You are an architectural visualization assistant. Describe this architecture "
+    "reference image factually and concisely for use as an image-generation base: "
+    "building type and massing, number of visible floors, facade materials, window "
+    "pattern, surroundings/entourage, camera angle, lighting and time of day. "
+    "One dense paragraph, no preamble.")
+
+
+def _ollama_models() -> list:
+    """已 pull 的模型名列表；Ollama 没起/没装则返回空列表。"""
+    try:
+        r = _local_get(f"{OLLAMA_URL}/api/tags", timeout=2)
+        return [m.get("name", "") for m in r.json().get("models", [])]
+    except Exception:
+        return []
+
+
+def _pick_vision_model(models: list) -> str:
+    for hint in VISION_MODEL_HINTS:
+        for name in models:
+            if hint in name.lower():
+                return name
+    return ""
+
+
+@app.route("/api/helper_vision", methods=["POST"])
+def api_helper_vision():
+    """本地识图：用本机 Ollama 的视觉模型描述底图，供助手页「本地」引擎拼装提示词。
+    未装/未起 Ollama 或没有视觉模型时，返回 ok=False + 安装指引，前端优雅降级。"""
+    models = _ollama_models()
+    if not models:
+        return jsonify({
+            "ok": False,
+            "reason": "no_ollama",
+            "msg": "没检测到本地视觉模型。安装 Ollama（ollama.com）后执行一次："
+                   "\n    ollama pull qwen2.5-vl\n即可离线识图、无需账号或 VPN。"
+                   "在此之前，可直接在下方想法里描述画面，或改用 ChatGPT 引擎。"}), 200
+    model = _pick_vision_model(models)
+    if not model:
+        return jsonify({
+            "ok": False,
+            "reason": "no_vision_model",
+            "msg": f"检测到 Ollama 但没有视觉模型（已装：{', '.join(models[:5])}）。"
+                   "执行 `ollama pull qwen2.5-vl` 拉一个带识图能力的模型即可。"}), 200
+
+    img = request.files.get("image")
+    if not img or not img.filename:
+        return jsonify({"ok": False, "msg": "没有收到图片"}), 400
+    tmp_dir = os.path.join(WORKSPACE, "_helper")
+    os.makedirs(tmp_dir, exist_ok=True)
+    try:
+        path = save_image_optimized(img, os.path.join(tmp_dir, datetime.now().strftime("v_%H%M%S")))
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        session = requests.Session()
+        session.trust_env = False
+        resp = session.post(f"{OLLAMA_URL}/api/generate", timeout=180, json={
+            "model": model, "prompt": VISION_DESCRIBE_PROMPT,
+            "images": [b64], "stream": False})
+        desc = (resp.json().get("response") or "").strip()
+        if not desc:
+            return jsonify({"ok": False, "msg": "本地模型没返回描述，可重试或改用 ChatGPT 引擎"}), 200
+        return jsonify({"ok": True, "model": model, "desc": desc})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": f"本地识图失败：{e}"}), 200
+
+
+# ======================================================================
+#  在线更新（需求⑤）：顶部「检查更新」按钮 → git pull + 重启，连网即得新版
+# ======================================================================
+def app_version() -> str:
+    try:
+        with open(os.path.join(APP_DIR, "VERSION"), encoding="utf-8") as f:
+            return f.read().strip() or "0.0.0"
+    except OSError:
+        return "0.0.0"
+
+
+def _git(args: list, timeout: int = 60):
+    """在 APP_DIR 里跑一条 git（固定参数，无 shell 注入），返回 (returncode, 输出)。"""
+    try:
+        p = subprocess.run(["git", *args], cwd=APP_DIR, capture_output=True,
+                           text=True, timeout=timeout)
+        return p.returncode, (p.stdout + p.stderr).strip()
+    except FileNotFoundError:
+        return 127, "本机没装 git，无法在线更新。"
+    except subprocess.TimeoutExpired:
+        return 124, "git 操作超时（可能网络不通）。"
+    except Exception as e:
+        return 1, str(e)
+
+
+def _busy_rendering() -> bool:
+    return S["state"] in ("connecting", "running", "waiting_confirm",
+                          "waiting_clarification", "waiting_feedback", "editing", "stalled")
+
+
+@app.route("/api/update_check")
+def api_update_check():
+    """查远端有没有新版：git fetch 后比对当前分支与 origin/当前分支。"""
+    code, branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=10)
+    if code != 0:
+        return jsonify({"ok": False, "msg": f"读取分支失败：{branch}"}), 200
+    branch = branch.strip() or "main"
+    code, out = _git(["fetch", "--quiet", "origin", branch], timeout=60)
+    if code != 0:
+        return jsonify({"ok": False, "msg": f"检查更新失败（连网了吗？）：{out}"}), 200
+    _, behind = _git(["rev-list", "--count", f"HEAD..origin/{branch}"], timeout=15)
+    _, changelog = _git(["log", "--oneline", "-20", f"HEAD..origin/{branch}"], timeout=15)
+    try:
+        n = int(behind.strip())
+    except ValueError:
+        n = 0
+    return jsonify({"ok": True, "current": app_version(), "branch": branch,
+                    "behind": n, "changelog": changelog,
+                    "has_update": n > 0})
+
+
+def _restart_process():
+    """延迟一点用 execv 就地重启：无论有没有 supervisor 都能加载新代码（PID 不变）。"""
+    import time as _t
+    _t.sleep(1.0)
+    try:
+        os.execv(sys.executable, [sys.executable, os.path.join(APP_DIR, "app.py")])
+    except Exception:
+        os._exit(3)  # execv 失败也退出，让 supervisor 用新代码重新拉起
+
+
+@app.route("/api/update_apply", methods=["POST"])
+def api_update_apply():
+    """拉取新版并重启。渲染进行中拒绝，避免打断任务。"""
+    if _busy_rendering():
+        return jsonify({"ok": False, "msg": "有渲染任务在进行，请先结束/完成再更新"}), 400
+    code, branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=10)
+    branch = branch.strip() or "main"
+    code, out = _git(["pull", "--ff-only", "origin", branch], timeout=120)
+    if code != 0:
+        return jsonify({"ok": False, "msg": f"更新失败：{out}"}), 200
+    if "Already up to date" in out or "已经是最新" in out:
+        return jsonify({"ok": True, "updated": False, "msg": "已经是最新版本。", "log": out})
+    threading.Thread(target=_restart_process, daemon=True).start()
+    return jsonify({"ok": True, "updated": True, "restarting": True,
+                    "msg": "已拉取新版，正在重启服务…约 3~5 秒后刷新页面即可。", "log": out})
 
 
 # ---- 历史管理内部目录（一律以 _ 开头，历史列表自动跳过，避免自我列出）----
@@ -874,8 +1095,10 @@ def api_history():
                     meta = {}
             sessions.append({
                 "session": name,
-                "requirement": meta.get("requirement", ""),
+                "requirement": meta.get("requirement", ""),      # 建筑师最初的命令（需求②）
                 "created": meta.get("created", ""),
+                "last_prompt_zh": meta.get("last_prompt_zh", ""),  # 最后一版中文提示词
+                "last_prompt_en": meta.get("last_prompt_en", ""),  # 最后一版英文提示词
                 "images": imgs,
                 "favorites": [im for im in imgs if (name, im) in favs],
                 "count": len(imgs),
