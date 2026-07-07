@@ -59,3 +59,16 @@
 1. 阶段1：能打开工作室、用箭头/文字/椭圆/画笔标注底图、改颜色粗细、撤销、完成后底图带标注。
 2. 阶段2：能拖入自己的 PNG 摆放缩放；内置素材库能选用；许可有记录。
 3. 阶段3：圈区域+写指令，渲染只在圈内加配景、不动其余；标注指令不残留在成图里。
+
+## 实现记录
+
+- **2026-07-07 阶段1 完工**：`annotate.js` 之前已写好但未接线、且缺样式。本轮补齐：
+  index.html 加 `#annStudio` 全套样式 + `<script src="/static/annotate.js">` + 原图旁
+  「✏️ 标注底图」按钮 + `annotateBase()`（压平后回填上传框）。至此阶段1验收通过。
+- 另外在**已接线的**「生成图局部修改」画板上也补了**箭头工具 + 线宽滑块**（需求①），
+  与本工作室相互独立、互不影响。
+- **本地识图改用 Ollama**：原计划的浏览器内 Florence-2（transformers.js）在本机报
+  “both local and remote models are disabled”。按用户要求改为“**本地部署、有识图能力的
+  大模型**”——后端 `/api/helper_vision` 调用本机 Ollama 视觉模型（qwen2.5-vl / llava /
+  moondream 等），离线、零 API key；未装则优雅降级并给一键安装指引。`fetch_assets.py`
+  的 Florence 下载保留但助手页不再依赖它。

@@ -193,6 +193,24 @@
   .editor-hint { color: var(--taupe); font-size: 12px; margin: 10px 0 0; }
   .editor-hint b { color: var(--wine); }
 
+  /* 底图标注工作室（阶段1）——annotate.js 的样式；渲染前给底图加箭头/文字/椭圆/画笔 */
+  #annStudio { position: fixed; inset: 0; background: rgba(58,53,47,.94); display: none;
+               z-index: 101; align-items: center; justify-content: center; }
+  .ann-box { background: var(--paper); border: 1px solid var(--sand); border-radius: 4px;
+             padding: 18px; max-width: 96vw; max-height: 96vh; overflow: auto; }
+  .ann-tools { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .ann-tools b { font-family: var(--serif); font-size: 15px; color: var(--wine); letter-spacing: 2px; }
+  .ann-toolset { display: flex; gap: 6px; flex-wrap: wrap; }
+  .ann-t { padding: 7px 14px; border-radius: 3px; border: 1px solid var(--sand); background: #fff;
+           color: var(--ink); font-size: 12.5px; font-weight: 400; cursor: pointer; }
+  .ann-t:hover { border-color: var(--wine); color: var(--wine); }
+  .ann-t.on { background: var(--wine); border-color: var(--wine); color: var(--cream); font-weight: 600; }
+  .ann-ctl { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink); }
+  .ann-done { background: var(--sage); color: #fff; border-color: var(--sage); font-weight: 600; }
+  #annCanvas { display: block; border-radius: 2px; cursor: crosshair; touch-action: none;
+               max-width: 90vw; max-height: 66vh; border: 1px solid var(--sand); background: var(--paper2); }
+  .ann-hint { color: var(--taupe); font-size: 12px; margin-top: 10px; }
+
   /* 历史成图（痛点三：挑一张当新底图） */
   #baseFromBanner { display: none; align-items: center; gap: 10px; background: var(--paper2);
                     border: 1px solid var(--wine); border-radius: 3px; padding: 8px 12px;
@@ -276,6 +294,7 @@
     <button class="btn-blue" id="launchBtn" style="display:none"
             onclick="launchChrome()">启动 Chrome 去登录</button>
     <a class="btn-ghost" href="/helper" style="text-decoration:none">提示词助手（无需账号）</a>
+    <button class="btn-ghost" id="updateBtn" onclick="checkUpdate()" title="连网检查并更新到最新版">检查更新</button>
   </div>
 </div></div>
 
@@ -309,6 +328,8 @@
         <span id="baseHint">点击选择原图</span>
         <div class="thumbs" id="baseThumbs"></div>
       </div>
+      <button class="btn-ghost" type="button" style="width:100%;margin-top:8px"
+              onclick="annotateBase()">✏️ 标注底图 <small>— 箭头/文字/椭圆/画笔 · 可改颜色粗细</small></button>
 
       <label>意向图 <small>— 可选多张，仅借鉴氛围 / 材质 / 光线</small></label>
       <div class="drop" id="refDrop" onclick="refInput.click()">
@@ -446,6 +467,8 @@
 
 <div id="lightbox" onclick="this.style.display='none'"><img id="lightboxImg"></div>
 
+<script src="/static/annotate.js"></script>
+
 <!-- 局部修改画板 -->
 <div id="editor">
   <div class="editor-box">
@@ -454,17 +477,21 @@
       <span style="flex:1"></span>
       <button class="tool active" id="toolBrush" onclick="setTool('brush')">手画</button>
       <button class="tool" id="toolLine" onclick="setTool('line')">直线</button>
+      <button class="tool" id="toolArrow" onclick="setTool('arrow')">箭头</button>
       <button class="tool" id="toolRect" onclick="setTool('rect')">框选</button>
       <button class="tool" id="toolPoly" onclick="setTool('poly')">多边形套索</button>
       <button class="tool" id="toolSmear" onclick="setTool('smear')">涂抹</button>
       <button class="tool" id="toolEraser" onclick="setTool('eraser')">橡皮擦</button>
+      <label class="tool" style="display:flex;align-items:center;gap:6px;cursor:default">
+        线宽 <input type="range" id="editSize" min="4" max="60" value="18"
+                   oninput="edSize=+this.value" style="width:96px;vertical-align:middle"></label>
       <button class="tool" onclick="undoStroke()">撤销</button>
       <button class="tool" onclick="clearStrokes()">清空</button>
       <button class="tool" onclick="closeEditor()">关闭</button>
     </div>
     <canvas id="editCanvas"></canvas>
     <div class="editor-hint">用红色标出<b>唯一允许修改</b>的区域——AI 将被严格要求不动区域外的任何内容。<br>
-      手画/涂抹：按住拖动 · 直线：点起点再点终点 · 框选：拖出矩形 · 多边形套索：连续点、<b>双击闭合</b> · 橡皮擦：拖过要删掉的标记</div>
+      手画/涂抹：按住拖动 · 直线/箭头：拖出 · 框选：拖出矩形 · 多边形套索：连续点、<b>双击闭合</b> · 橡皮擦：拖过要删掉的标记 · <b>线宽</b>滑块调粗细</div>
     <textarea id="editInstruction" placeholder="这个区域要怎么改？例如：把入口雨棚改成木格栅材质 / 去掉这个人 / 这块墙面换成清水混凝土"></textarea>
     <div class="row">
       <button class="btn-blue" style="flex:1" onclick="submitEdit()">提交局部修改（只改圈出的部分）</button>
@@ -477,9 +504,10 @@ const stateNames = { idle:"未开始", connecting:"连接 Chrome 中…", runnin
                      waiting_confirm:"等你确认提示词",
                      waiting_clarification:"AI 有疑问，等你回答",
                      waiting_feedback:"等待你的点评", editing:"局部修改中",
-                     done:"已完成", error:"出错" };
+                     stalled:"已暂停 · 待重试", done:"已完成", error:"出错" };
 let sessId = null, rendered = 0, curState = "idle", confirmLoaded = false, latestItems = [];
 let selectedBaseFrom = "", histState = "";   // 痛点三：历史成图当新底图
+let renderedSession = null;   // 需求⑥：过程图画廊绑定 session_id，换任务即清空、防竞态
 const $ = id => document.getElementById(id);
 
 /* ---------------- 历史成图（痛点三）+ 重点/删除/回收站 ---------------- */
@@ -507,12 +535,18 @@ async function loadHistory() {
       }).join("");
       const when = esc(s.created || s.session);
       const req = s.requirement
-        ? `<div class="hist-req">${esc(s.requirement)}</div>`
-        : `<div class="hist-req"><span class="noreq">（无需求记录）</span></div>`;
+        ? `<div class="hist-req"><b style="color:var(--wine)">初始命令：</b>${esc(s.requirement)}</div>`
+        : `<div class="hist-req"><span class="noreq">（无初始命令记录）</span></div>`;
+      // 需求②：每个历史会话保留建筑师的初始命令 + 最后一版提示词
+      const lp = (s.last_prompt_zh || s.last_prompt_en)
+        ? `<details><summary>最后一版提示词</summary><pre>${esc(s.last_prompt_zh || "")}${
+            s.last_prompt_en ? "\n\n[EN]\n" + esc(s.last_prompt_en) : ""}</pre></details>`
+        : "";
       return `<div class="hist-sess">
         <button class="hist-del-sess" title="删除整个会话（进回收站）" onclick="delHistory('${s.session}','')">🗑 删除</button>
         <div class="hist-head"><b>${when}</b> · ${s.count} 张</div>
         ${req}
+        ${lp}
         <div class="hist-thumbs">${thumbs}</div>
       </div>`;
     }).join("");
@@ -862,16 +896,60 @@ async function nudgeChatGPT() {
 
 function zoom(src) { $("lightboxImg").src = src; $("lightbox").style.display = "flex"; }
 
+/* ---------------- 底图标注工作室（阶段1，annotate.js）---------------- */
+function annotateBase() {
+  let src = "";
+  const f = $("baseInput").files[0];
+  if (f) src = URL.createObjectURL(f);
+  else if (selectedBaseFrom) src = "/images/" + selectedBaseFrom;
+  if (!src) { alert("请先选择或上传一张原图，再标注"); return; }
+  if (typeof openAnnotate !== "function") { alert("标注模块未加载，刷新页面再试"); return; }
+  openAnnotate(src, (flatDataUrl) => {
+    // 压平后的带标注底图 → 作为新的上传底图（真的贴上去，进生图底图）
+    fetch(flatDataUrl).then(r => r.blob()).then(blob => {
+      const file = new File([blob], "标注底图.png", { type: "image/png" });
+      const dt = new DataTransfer(); dt.items.add(file);
+      $("baseInput").files = dt.files;
+      selectedBaseFrom = "";                    // 已变成修改后的上传图，不再用历史图路径
+      $("baseFromBanner").style.display = "none";
+      preview($("baseInput"), "baseThumbs");
+      $("baseHint").textContent = "已用标注后的底图（点击可重选）";
+    });
+  });
+}
+
+/* ---------------- 在线更新（需求⑤）---------------- */
+async function checkUpdate() {
+  const btn = $("updateBtn");
+  btn.disabled = true; btn.textContent = "检查中…";
+  try {
+    const j = await apiJson("/api/update_check");
+    if (!j.ok) { alert(j.msg || "检查更新失败"); return; }
+    if (!j.has_update) { alert(`已经是最新版本（v${j.current}）。`); return; }
+    const changelog = (j.changelog || "").split("\n").slice(0, 12).join("\n");
+    if (!confirm(`发现新版本（当前 v${j.current}，落后 ${j.behind} 次提交）。\n\n更新内容：\n${changelog}\n\n现在更新并重启服务吗？`)) return;
+    btn.textContent = "更新中…";
+    const a = await apiJson("/api/update_apply", { method: "POST" });
+    if (!a.ok) { alert(a.msg || "更新失败"); return; }
+    alert(a.msg || (a.updated ? "已更新" : "已是最新"));
+    if (a.restarting) setTimeout(() => location.reload(), 5000);
+  } catch (e) {
+    alert("检查更新失败：" + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "检查更新";
+  }
+}
+
 async function poll() {
   try {
     const s = await apiJson("/api/status");
     sessId = s.session_id; curState = s.state; latestItems = s.items;
     $("dot").className = "pulse " +
-      (["waiting_feedback","waiting_clarification","waiting_confirm"].includes(s.state) ? "waiting" :
+      (["waiting_feedback","waiting_clarification","waiting_confirm","stalled"].includes(s.state) ? "waiting" :
       ["running","connecting","editing"].includes(s.state) ? "running" : s.state);
     $("stateText").textContent = (stateNames[s.state] || s.state) +
       (s.iteration ? ` · 第 ${s.iteration} 轮` : "") +
-      (s.state === "error" ? "：" + s.error : "");
+      ((s.state === "error" || s.state === "stalled") && s.error ? "：" + s.error : "");
     if (s.logs.length) { $("log").textContent = s.logs.join("\n");
                          $("log").scrollTop = $("log").scrollHeight; }
 
@@ -893,13 +971,15 @@ async function poll() {
     $("clarifyCard").style.display = s.state === "waiting_clarification" ? "block" : "none";
     if (s.state === "waiting_clarification") $("questions").textContent = s.questions || "";
     $("finishBtn").style.display =
-      ["running","waiting_confirm","waiting_feedback","waiting_clarification","editing"].includes(s.state)
+      ["running","waiting_confirm","waiting_feedback","waiting_clarification","editing","stalled"].includes(s.state)
         ? "inline-block" : "none";
     $("nudgeBtn").style.display =
-      ["connecting","running","editing"].includes(s.state)
+      ["connecting","running","editing","stalled"].includes(s.state)
         ? "inline-block" : "none";
+    if (!$("nudgeBtn").disabled)   // 别覆盖点击后「已发送…」的临时文案
+      $("nudgeBtn").textContent = s.state === "stalled" ? "↻ 重试本轮" : "刷新 ChatGPT / 重查结果";
     $("startBtn").disabled =
-      ["connecting","running","waiting_confirm","waiting_clarification","waiting_feedback","editing"]
+      ["connecting","running","waiting_confirm","waiting_clarification","waiting_feedback","editing","stalled"]
         .includes(s.state);
     if (s.state === "done") {
       $("doneCard").style.display = "block";
@@ -907,6 +987,14 @@ async function poll() {
       if (histState !== "done") loadHistory();   // 刚出的新成图并入历史列表
     }
     histState = s.state;
+
+    // 需求⑥：过程图画廊绑定当前 session_id。会话一变（开了新任务）立刻清空重来，
+    // 上一任务的过程图不再残留在工作区——旧成图仍完整保存在「历史成图」里。
+    if (s.session_id !== renderedSession) {
+      renderedSession = s.session_id;
+      rendered = 0;
+      $("gallery").innerHTML = '<div class="empty" id="emptyHint">— 过程图会实时出现在这里 —</div>';
+    }
 
     for (; rendered < s.items.length; rendered++) {
       const hint = $("emptyHint"); if (hint) hint.remove();
@@ -973,8 +1061,9 @@ receiveHandoff();
 
 /* ---------------- 局部修改画板 ---------------- */
 let edImg = null, edSource = "", edTool = "brush", strokes = [], drawing = null, erasing = false;
+let edSize = 18;                       // 画笔/箭头线宽（由「线宽」滑块控制，需求①）
 const canvas = $("editCanvas"), ctx = canvas.getContext("2d");
-const TOOL_IDS = { brush:"toolBrush", line:"toolLine", rect:"toolRect",
+const TOOL_IDS = { brush:"toolBrush", line:"toolLine", arrow:"toolArrow", rect:"toolRect",
                    poly:"toolPoly", smear:"toolSmear", eraser:"toolEraser" };
 
 function openEditor(imageName) {
@@ -1021,18 +1110,20 @@ function render() {
   const W = canvas.width;
   const poly = (pts) => pts.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
   for (const s of [...strokes, drawing].filter(Boolean)) {
+    const sz = s.size || 18;                       // 每条描边记住自己创建时的线宽
     if (s.tool === "brush" || s.tool === "smear") {
-      ctx.lineWidth = s.tool === "smear" ? Math.max(30, W / 26) : Math.max(14, W / 60);
+      ctx.lineWidth = s.tool === "smear" ? sz * 2.2 : sz;
       ctx.beginPath(); poly(s.pts); ctx.stroke();
-    } else if (s.tool === "line") {
-      ctx.lineWidth = Math.max(6, W / 120);
+    } else if (s.tool === "line" || s.tool === "arrow") {
+      ctx.lineWidth = sz;
       ctx.beginPath(); ctx.moveTo(s.x0, s.y0); ctx.lineTo(s.x1, s.y1); ctx.stroke();
+      if (s.tool === "arrow") drawArrowHead(s.x0, s.y0, s.x1, s.y1, sz);
     } else if (s.tool === "rect") {
       const x = Math.min(s.x0, s.x1), y = Math.min(s.y0, s.y1),
             w = Math.abs(s.x1 - s.x0), h = Math.abs(s.y1 - s.y0);
-      ctx.lineWidth = 4; ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
+      ctx.lineWidth = Math.max(3, sz / 4); ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
     } else if (s.tool === "poly") {
-      ctx.lineWidth = Math.max(4, W / 150);
+      ctx.lineWidth = Math.max(3, sz / 4);
       ctx.beginPath(); poly(s.pts);
       if (s.closed) { ctx.closePath(); ctx.fill(); ctx.stroke(); }
       else {
@@ -1042,6 +1133,14 @@ function render() {
       }
     }
   }
+}
+// 箭头头部：在终点画两条回折短线
+function drawArrowHead(x0, y0, x1, y1, sz) {
+  const a = Math.atan2(y1 - y0, x1 - x0), L = Math.max(14, sz * 2.4);
+  ctx.beginPath(); ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - L * Math.cos(a - 0.42), y1 - L * Math.sin(a - 0.42));
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - L * Math.cos(a + 0.42), y1 - L * Math.sin(a + 0.42)); ctx.stroke();
 }
 
 function evPos(e) {
@@ -1061,7 +1160,7 @@ function hitStroke(s, x, y, R) {
     return x >= Math.min(s.x0, s.x1) - R && x <= Math.max(s.x0, s.x1) + R &&
            y >= Math.min(s.y0, s.y1) - R && y <= Math.max(s.y0, s.y1) + R;
   }
-  if (s.tool === "line") return segDist(x, y, s.x0, s.y0, s.x1, s.y1) <= R;
+  if (s.tool === "line" || s.tool === "arrow") return segDist(x, y, s.x0, s.y0, s.x1, s.y1) <= R;
   const pts = s.pts || [];
   for (let k = 0; k < pts.length; k++) {
     if (Math.hypot(x - pts[k][0], y - pts[k][1]) <= R) return true;
@@ -1081,11 +1180,11 @@ canvas.addEventListener("pointerdown", e => {
   if (edTool === "eraser") { erasing = true; eraseAt(x, y); return; }
   if (edTool === "poly") {                          // 逐点点击，双击闭合
     if (drawing && drawing.tool === "poly") drawing.pts.push([x, y]);
-    else drawing = { tool: "poly", pts: [[x, y]], closed: false };
+    else drawing = { tool: "poly", size: edSize, pts: [[x, y]], closed: false };
     render(); return;
   }
-  if (edTool === "brush" || edTool === "smear") drawing = { tool: edTool, pts: [[x, y]] };
-  else drawing = { tool: edTool, x0: x, y0: y, x1: x, y1: y };  // line / rect
+  if (edTool === "brush" || edTool === "smear") drawing = { tool: edTool, size: edSize, pts: [[x, y]] };
+  else drawing = { tool: edTool, size: edSize, x0: x, y0: y, x1: x, y1: y };  // line / arrow / rect
   render();
 });
 canvas.addEventListener("pointermove", e => {
