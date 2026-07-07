@@ -48,7 +48,7 @@ class ChatGPTClient:
 
     # ---------- 连接与页面管理 ----------
 
-    def connect(self):
+    def connect(self, director_only: bool = False):
         self._pw = sync_playwright().start()
         try:
             self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
@@ -63,13 +63,15 @@ class ChatGPTClient:
         self._ctx = self._browser.contexts[0]
         try:
             self.director_page = self._ctx.new_page()
-            self.gen_page = self._ctx.new_page()
+            if not director_only:
+                self.gen_page = self._ctx.new_page()
         except Exception as e:
             raise ChatGPTError(f"无法在被接管的浏览器里开新页面——{CDP_PORT} 端口可能被"
                                f"其他程序（而非专用 Chrome）占用。原始错误：{e}")
         self._open_chat(self.director_page)
         self._check_logged_in(self.director_page)
-        self._open_chat(self.gen_page)  # 立即导航，别留一个吓人的 about:blank
+        if not director_only:
+            self._open_chat(self.gen_page)  # 立即导航，别留一个吓人的 about:blank
         self.log("已接管 Chrome，ChatGPT 登录状态正常。可以把专用 Chrome 最小化，回操作页面看进度。")
 
     def close(self):
