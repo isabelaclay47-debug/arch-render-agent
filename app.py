@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 
 import requests
@@ -926,6 +927,191 @@ def _pick_vision_model(models: list) -> str:
     return ""
 
 
+# ---- 一键安装本地识图（下载并静默安装 Ollama + 拉视觉模型），必须用户同意后才触发 ----
+OLLAMA_DEFAULT_MODEL = "moondream"     # 小而快、库里稳定存在；进阶可选 qwen2.5vl
+OLLAMA_MODEL_CHOICES = {               # 供前端选择：名字 → 大致体积说明
+    "moondream": "约 1.7GB · 小而快，识图够用",
+    "qwen2.5vl:3b": "约 3.2GB · 更强的建筑识别（推荐）",
+}
+OLLAMA_WIN_EXE = os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe")
+OLLAMA_INSTALLER_URL_WIN = "https://ollama.com/download/OllamaSetup.exe"
+
+_vision_setup = {"active": False, "stage": "idle", "log": [], "done": False,
+                 "ok": False, "error": "", "model": ""}
+_vision_setup_lock = threading.Lock()
+
+
+def _vlog(msg: str):
+    line = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+    with _vision_setup_lock:
+        _vision_setup["log"].append(line)
+        _vision_setup["log"][:] = _vision_setup["log"][-80:]
+    print("[vision-setup]", line)
+
+
+def _set_stage(stage: str):
+    with _vision_setup_lock:
+        _vision_setup["stage"] = stage
+
+
+def _ollama_exe() -> str:
+    exe = shutil.which("ollama")
+    if exe:
+        return exe
+    if os.name == "nt" and os.path.isfile(OLLAMA_WIN_EXE):
+        return OLLAMA_WIN_EXE
+    return ""
+
+
+def _ollama_up() -> bool:
+    try:
+        _local_get(f"{OLLAMA_URL}/api/tags", timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def _ollama_installed() -> bool:
+    return bool(_ollama_exe()) or _ollama_up()
+
+
+def _safe_model_name(n) -> str:
+    n = str(n or "").strip()
+    ok = n and len(n) < 60 and all(c.isalnum() or c in ".-:_/" for c in n)
+    return n if ok else ""
+
+
+@app.route("/api/vision_status")
+def api_vision_status():
+    """本地识图就绪状态 + 安装进度，供助手页展示与轮询。"""
+    models = _ollama_models()
+    model = _pick_vision_model(models)
+    with _vision_setup_lock:
+        setup = dict(_vision_setup)
+    return jsonify({
+        "installed": _ollama_installed(),
+        "running": _ollama_up(),
+        "has_vision_model": bool(model),
+        "model": model,
+        "ready": bool(model),
+        "os": os.name,
+        "choices": OLLAMA_MODEL_CHOICES,
+        "default_model": OLLAMA_DEFAULT_MODEL,
+        "setup": setup,
+    })
+
+
+@app.route("/api/vision_setup", methods=["POST"])
+def api_vision_setup():
+    """用户同意后，一键：下载并静默安装 Ollama（如未装）→ 启动服务 → 拉视觉模型。
+    这是**用户显式同意**才触发的重动作（会下载数百 MB~数 GB 并运行安装程序）。"""
+    data = request.get_json(silent=True) or {}
+    model = _safe_model_name(data.get("model")) or OLLAMA_DEFAULT_MODEL
+    with _vision_setup_lock:
+        if _vision_setup["active"]:
+            return jsonify({"ok": True, "msg": "安装已在进行中，请看进度。"})
+        _vision_setup.update({"active": True, "stage": "starting", "log": [],
+                              "done": False, "ok": False, "error": "", "model": model})
+    threading.Thread(target=_run_vision_setup, args=(model,), daemon=True).start()
+    return jsonify({"ok": True, "msg": "已开始准备本地识图，界面会显示进度。"})
+
+
+def _run_vision_setup(model: str):
+    try:
+        exe = _ollama_exe()
+        if not exe and not _ollama_up():
+            _set_stage("installing_ollama")
+            _vlog("未检测到 Ollama，开始下载并安装（首次约几百 MB）…")
+            if os.name == "nt":
+                _install_ollama_windows()
+            elif sys.platform == "darwin":
+                raise RuntimeError(
+                    "macOS 暂不支持自动安装 Ollama。请到 ollama.com 下载安装后，再点一次本按钮。")
+            else:
+                _install_ollama_linux()
+            exe = _ollama_exe()
+            if not exe and not _ollama_up():
+                raise RuntimeError("Ollama 安装后仍未就绪，请手动确认安装。")
+            _vlog("Ollama 安装完成。")
+
+        _set_stage("starting")
+        if not _ollama_up():
+            _vlog("启动 Ollama 服务…")
+            _start_ollama_serve(exe)
+            _wait_ollama_up(60)
+
+        _set_stage("pulling_model")
+        _vlog(f"开始下载识图模型 {model}（较大、只需一次，之后离线复用）…")
+        _pull_model(exe or "ollama", model)
+        _vlog(f"识图模型 {model} 就绪，本地识图已可用。")
+        with _vision_setup_lock:
+            _vision_setup.update({"active": False, "stage": "done", "done": True, "ok": True})
+    except Exception as e:
+        _vlog(f"失败：{e}")
+        with _vision_setup_lock:
+            _vision_setup.update({"active": False, "stage": "error", "done": True,
+                                  "ok": False, "error": str(e)})
+
+
+def _install_ollama_windows():
+    import tempfile
+    import urllib.request
+    tmp = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
+    _vlog("下载 OllamaSetup.exe（官方源）…")
+    req = urllib.request.Request(OLLAMA_INSTALLER_URL_WIN, headers={"User-Agent": "ara/1.0"})
+    with urllib.request.urlopen(req, timeout=900) as r, open(tmp, "wb") as f:
+        shutil.copyfileobj(r, f)
+    if os.path.getsize(tmp) < 1_000_000:
+        raise RuntimeError("Ollama 安装包下载不完整，请重试或手动安装。")
+    _vlog("运行安装程序（静默、无需管理员）…")
+    subprocess.run([tmp, "/VERYSILENT", "/NORESTART"], timeout=900)
+    for _ in range(30):          # 等安装落地
+        if _ollama_exe():
+            return
+        time.sleep(1)
+
+
+def _install_ollama_linux():
+    _vlog("运行官方安装脚本：curl -fsSL https://ollama.com/install.sh | sh …")
+    p = subprocess.run("curl -fsSL https://ollama.com/install.sh | sh",
+                       shell=True, timeout=900, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"安装脚本失败：{(p.stderr or '')[-200:]}")
+
+
+def _start_ollama_serve(exe: str):
+    kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if os.name == "nt":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+    try:
+        subprocess.Popen([exe or "ollama", "serve"], **kwargs)
+    except Exception:
+        pass  # Windows 安装后通常已自启服务，起不来也无妨，下一步 _wait_ollama_up 会判定
+
+
+def _wait_ollama_up(timeout: int):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _ollama_up():
+            return
+        time.sleep(1)
+    raise RuntimeError("Ollama 服务启动超时，请手动运行 `ollama serve` 后重试。")
+
+
+def _pull_model(exe: str, model: str):
+    proc = subprocess.Popen([exe, "pull", model], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    last = ""
+    for line in proc.stdout:
+        line = (line or "").strip()
+        if line and line != last:
+            last = line
+            _vlog(line[:120])
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"ollama pull {model} 失败（返回码 {proc.returncode}）。")
+
+
 @app.route("/api/helper_vision", methods=["POST"])
 def api_helper_vision():
     """本地识图：用本机 Ollama 的视觉模型描述底图，供助手页「本地」引擎拼装提示词。
@@ -1010,12 +1196,15 @@ def api_update_check():
         return jsonify({"ok": False, "msg": f"检查更新失败（连网了吗？）：{out}"}), 200
     _, behind = _git(["rev-list", "--count", f"HEAD..origin/{branch}"], timeout=15)
     _, changelog = _git(["log", "--oneline", "-20", f"HEAD..origin/{branch}"], timeout=15)
+    _, changed = _git(["diff", "--name-only", f"HEAD..origin/{branch}"], timeout=15)
+    deps_changed = any(f.strip() == "requirements.txt" for f in changed.splitlines())
     try:
         n = int(behind.strip())
     except ValueError:
         n = 0
     return jsonify({"ok": True, "current": app_version(), "branch": branch,
                     "behind": n, "changelog": changelog,
+                    "deps_changed": deps_changed,   # 本次更新是否动了依赖
                     "has_update": n > 0})
 
 
@@ -1029,21 +1218,58 @@ def _restart_process():
         os._exit(3)  # execv 失败也退出，让 supervisor 用新代码重新拉起
 
 
+def _read_bytes(path: str) -> bytes:
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return b""
+
+
 @app.route("/api/update_apply", methods=["POST"])
 def api_update_apply():
-    """拉取新版并重启。渲染进行中拒绝，避免打断任务。"""
+    """拉取新版并重启。渲染进行中拒绝，避免打断任务。
+    若本次更新改了 requirements.txt，则先自动 pip install；装失败就**不重启**
+    （避免重启到缺依赖、跑不起来的新代码），改为提示用户手动安装。"""
     if _busy_rendering():
         return jsonify({"ok": False, "msg": "有渲染任务在进行，请先结束/完成再更新"}), 400
     code, branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=10)
     branch = branch.strip() or "main"
+    req_path = os.path.join(APP_DIR, "requirements.txt")
+    before_req = _read_bytes(req_path)
     code, out = _git(["pull", "--ff-only", "origin", branch], timeout=120)
     if code != 0:
         return jsonify({"ok": False, "msg": f"更新失败：{out}"}), 200
     if "Already up to date" in out or "已经是最新" in out:
         return jsonify({"ok": True, "updated": False, "msg": "已经是最新版本。", "log": out})
+
+    deps_changed = _read_bytes(req_path) != before_req
+    deps_installed = None
+    if deps_changed:
+        log("依赖有变化，正在自动安装新依赖（pip install -r requirements.txt）…")
+        try:
+            p = subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_path],
+                               cwd=APP_DIR, capture_output=True, text=True, timeout=600)
+            deps_installed = p.returncode == 0
+            pip_tail = (p.stdout + p.stderr).strip()[-600:]
+        except Exception as e:
+            deps_installed, pip_tail = False, str(e)
+        if not deps_installed:
+            # 依赖没装上就别重启——新代码可能因缺包崩溃，反而更糟
+            log("⚠ 新依赖安装失败，已暂不重启。请手动运行 pip install -r requirements.txt 后重启。")
+            return jsonify({
+                "ok": False, "updated": True, "deps_changed": True, "deps_installed": False,
+                "msg": "代码已更新，但新依赖自动安装失败。请手动运行 "
+                       "`pip install -r requirements.txt` 后重启服务。",
+                "log": pip_tail}), 200
+        log("新依赖安装完成。")
+
     threading.Thread(target=_restart_process, daemon=True).start()
+    msg = "已拉取新版" + ("（含新依赖，已自动安装）" if deps_changed else "") + \
+          "，正在重启服务…约 3~5 秒后刷新页面即可。"
     return jsonify({"ok": True, "updated": True, "restarting": True,
-                    "msg": "已拉取新版，正在重启服务…约 3~5 秒后刷新页面即可。", "log": out})
+                    "deps_changed": deps_changed, "deps_installed": deps_installed,
+                    "msg": msg, "log": out})
 
 
 # ---- 历史管理内部目录（一律以 _ 开头，历史列表自动跳过，避免自我列出）----
