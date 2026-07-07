@@ -360,3 +360,47 @@ def extract_questions(text: str) -> str:
     """提取导演对话的 <反问> 内容；没有反问时返回空串。"""
     m = re.search(r"<反问>(.*?)</反问>", text, re.S)
     return m.group(1).strip() if m else ""
+
+
+# ======================================================================
+#  五、本地确定性拼装（助手页"本地模式"：无 LLM、不联网）
+# ======================================================================
+
+def build_prompt_locally(intent: str, image_desc: str, preset_texts=None) -> dict:
+    """把「用户想法 + 本地识图描述 + 勾选的储备库文本」确定性地拼装成中英双语提示词。
+    与自动生成共用同一套专业知识底座（骨架 / 储备库 / 英文底线），但不调用任何 LLM。"""
+    preset_texts = [t.strip() for t in (preset_texts or []) if t and t.strip()]
+    intent = (intent or "").strip()
+    image_desc = (image_desc or "").strip()
+
+    # 中文提示词：想法 + 识图 + 勾选模块，按可读顺序组织
+    zh_parts = []
+    if intent:
+        zh_parts.append(f"【建筑师想法】{intent}")
+    if image_desc:
+        zh_parts.append(f"【底图画面】{image_desc}")
+    if preset_texts:
+        zh_parts.append("【专业要求】\n- " + "\n- ".join(preset_texts))
+    if not zh_parts:
+        zh_parts.append("在严格保持原图建筑形体的前提下，提升材质真实感、光影与画面质感，"
+                        "达到专业建筑摄影质感。")
+    prompt_zh = "\n".join(zh_parts)
+
+    # 英文提示词：把可英文化的部分并入，末尾强制附加通用英文底线
+    en_bits = []
+    if image_desc:
+        en_bits.append(f"Base scene: {image_desc}.")
+    if intent:
+        en_bits.append(f"Architect's intent (translate faithfully): {intent}.")
+    if preset_texts:
+        en_bits.append("Professional requirements: " + " ".join(preset_texts))
+    en_head = " ".join(en_bits) if en_bits else (
+        "Improve material realism, lighting and overall quality while keeping the "
+        "building form pixel-faithful to the base image.")
+    prompt_en = f"{en_head}\n\n{GENERATION_BASICS}"
+
+    understanding_zh = (
+        "我据此把你的想法、底图画面和勾选的专业模块，整理成了下面这份完整的中英提示词——"
+        "你可以直接复制英文版拿去生图工具里用。")
+    return {"understanding_zh": understanding_zh,
+            "prompt_zh": prompt_zh, "prompt_en": prompt_en}
