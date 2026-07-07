@@ -19,8 +19,9 @@ function setEngine(e){
   $("engLocal").classList.toggle("on",e==="local");
   $("engHint").textContent = e==="chat"
     ? "将用 ChatGPT 看图并扩写（需已启动专用 Chrome 并登录）。"
-    : "将用本机 Ollama 视觉模型离线识图，免账号免 VPN（首次需装 Ollama 并 pull 一个视觉模型，如 qwen2.5-vl）。";
-  if(e==="local" && pickedFile) runLocalVision(pickedFile);   // 切到本地即识图
+    : "将用本机 Ollama 视觉模型离线识图，免账号免 VPN。未装可在下方一键准备。";
+  $("visionSetup").innerHTML="";
+  if(e==="local"){ refreshVisionStatus(); if(pickedFile) runLocalVision(pickedFile); }
 }
 
 function onPick(f){
@@ -142,5 +143,48 @@ async function runLocalVision(file){
 }
 
 function zoom(src){ $("lightboxImg").src=src; $("lightbox").style.display="flex"; }
+function esc(t){ const d=document.createElement("div"); d.textContent=t||""; return d.innerHTML; }
+
+// ---- 本地识图：状态 + 一键安装（下载 Ollama + 拉视觉模型，需你同意）----
+let _visionPoll=null;
+async function refreshVisionStatus(){
+  const box=$("visionSetup");
+  let s;
+  try{ s=await (await fetch("/api/vision_status")).json(); }catch(e){ box.innerHTML=""; return; }
+  const setup=s.setup||{};
+  if(setup.active){ renderVisionProgress(setup); startVisionPoll(); return; }
+  if(_visionPoll){ clearInterval(_visionPoll); _visionPoll=null; }   // 安装结束，停轮询
+  if(s.ready){ box.innerHTML=`<span style="color:#3f7d3f">✓ 本地识图就绪（${esc(s.model)}）</span>`; return; }
+  const opts=Object.entries(s.choices||{}).map(([m,desc])=>
+    `<option value="${m}" ${m===s.default_model?"selected":""}>${esc(m)} — ${esc(desc)}</option>`).join("");
+  const hint=s.installed ? "检测到 Ollama，但还没有识图模型。"
+                         : "还没装本地识图。可一键下载并安装 Ollama + 识图模型（需你同意）。";
+  const failed=setup.stage==="error"?`<div style="color:#a34242;margin-top:6px">上次失败：${esc(setup.error||"")}</div>`:"";
+  box.innerHTML=`<div style="background:#fff;border:1px solid var(--sand);border-radius:4px;padding:10px">
+      <div class="muted" style="margin-bottom:6px">${hint}</div>
+      <select id="visionModel" style="padding:6px;border:1px solid var(--sand);border-radius:3px">${opts}</select>
+      <button class="go" style="width:auto;padding:8px 14px;margin-left:6px" onclick="startVisionSetup()">一键准备本地识图</button>
+      ${failed}
+    </div>`;
+}
+async function startVisionSetup(){
+  const model=$("visionModel")?$("visionModel").value:"";
+  if(!confirm(`将下载并安装 Ollama（约几百 MB）+ 识图模型 ${model}，全部在本机、离线可复用。\n下载较大、请保持联网；期间可继续用 ChatGPT 引擎。\n\n现在开始吗？`)) return;
+  const j=await (await fetch("/api/vision_setup",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({model})})).json();
+  if(!j.ok){ alert(j.msg||"启动失败"); return; }
+  startVisionPoll(); refreshVisionStatus();
+}
+function startVisionPoll(){ if(!_visionPoll) _visionPoll=setInterval(refreshVisionStatus,2500); }
+function renderVisionProgress(setup){
+  const stageName={starting:"准备中",installing_ollama:"下载并安装 Ollama 中",
+                   pulling_model:"下载识图模型中",done:"完成",error:"出错"};
+  const logHtml=(setup.log||[]).slice(-8).map(esc).join("<br>");
+  $("visionSetup").innerHTML=`<div style="background:#fff;border:1px solid var(--sand);border-radius:4px;padding:10px">
+      <div style="color:var(--wine);font-weight:600">⏳ ${stageName[setup.stage]||setup.stage}…（可最小化，装好会自动就绪）</div>
+      <div class="muted" style="font-family:monospace;font-size:11px;margin-top:6px;max-height:120px;overflow:auto">${logHtml}</div>
+    </div>`;
+}
+
 setEngine("chat");
 receiveHandoff();

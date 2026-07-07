@@ -119,3 +119,44 @@ def test_helper_vision_degrades_without_ollama(tmp_path, monkeypatch):
 def test_pick_vision_model_prefers_known_vlm():
     assert appmod._pick_vision_model(["llama3:8b", "qwen2.5-vl:7b"]) == "qwen2.5-vl:7b"
     assert appmod._pick_vision_model(["llama3:8b"]) == ""
+
+
+# ---- ⑤ 依赖变化则自动 pip install（契约层面）----
+def test_update_check_reports_deps_changed(tmp_path, monkeypatch):
+    c, _ = _client(tmp_path, monkeypatch)
+    j = c.get("/api/update_check").get_json()
+    if j["ok"]:
+        assert "deps_changed" in j        # 字段存在，供前端提示
+
+
+# ---- ④ 一键装本地识图：状态 + 安全名 + 同意后触发（不真下载）----
+def test_safe_model_name_whitelist():
+    assert appmod._safe_model_name("qwen2.5vl:3b") == "qwen2.5vl:3b"
+    assert appmod._safe_model_name("moondream") == "moondream"
+    assert appmod._safe_model_name("bad name;rm -rf") == ""     # 拒绝空格/分号/注入
+    assert appmod._safe_model_name("") == ""
+
+
+def test_vision_status_offers_install_when_absent(tmp_path, monkeypatch):
+    c, _ = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(appmod, "_ollama_models", lambda: [])
+    monkeypatch.setattr(appmod, "_ollama_exe", lambda: "")
+    monkeypatch.setattr(appmod, "_ollama_up", lambda: False)
+    j = c.get("/api/vision_status").get_json()
+    assert j["ready"] is False and j["installed"] is False
+    assert appmod.OLLAMA_DEFAULT_MODEL in j["choices"]
+
+
+def test_vision_setup_consented_starts_without_downloading(tmp_path, monkeypatch):
+    c, _ = _client(tmp_path, monkeypatch)
+    called = {}
+    # 用桩替换真正的安装/下载，绝不在测试里跑安装程序
+    monkeypatch.setattr(appmod, "_run_vision_setup", lambda model: called.setdefault("m", model))
+    appmod._vision_setup["active"] = False
+    r = c.post("/api/vision_setup", json={"model": "moondream"})
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    # active 已被端点置位，桩函数会被后台线程调用
+    import time
+    time.sleep(0.1)
+    assert called.get("m") == "moondream"
+    appmod._vision_setup.update({"active": False, "stage": "idle", "log": []})
