@@ -8,6 +8,7 @@
      → 点"满意"后最终图输出到桌面。
 """
 import base64
+import json
 import os
 import shutil
 import subprocess
@@ -175,15 +176,45 @@ def ask_architect(questions: str) -> str:
     return _feedback["text"]
 
 
-def save_image_optimized(file_storage, dest_noext: str) -> str:
-    """压缩上传图：长边≤2000px、JPEG。生图模型吃不下原始大图，
+def _optimize_image(img, dest_noext: str) -> str:
+    """把一张 PIL 图压到长边≤2000px 的 JPEG。生图模型吃不下原始大图，
     且 Playwright 无法向 CDP 浏览器传输超过 50MB 的文件。"""
-    img = Image.open(file_storage.stream)
     img = img.convert("RGB")
     img.thumbnail((2000, 2000), Image.LANCZOS)
     out = dest_noext + ".jpg"
     img.save(out, "JPEG", quality=88)
     return out
+
+
+def save_image_optimized(file_storage, dest_noext: str) -> str:
+    """压缩上传图（来自表单文件）。"""
+    return _optimize_image(Image.open(file_storage.stream), dest_noext)
+
+
+def save_image_optimized_from_path(src_path: str, dest_noext: str) -> str:
+    """压缩已存在的本地图（用于把历史成图当新底图）。"""
+    return _optimize_image(Image.open(src_path), dest_noext)
+
+
+def _resolve_workspace_image(rel: str) -> str:
+    """把浏览器传来的 "会话/图名" 安全地解析为 workspace 内的真实路径。
+    只取两段 basename 拼进 WORKSPACE，并做 realpath 包含校验，杜绝 ../ 路径穿越；
+    非法或不存在都返回空串。"""
+    parts = [p for p in rel.replace("\\", "/").split("/") if p]
+    if len(parts) < 2:
+        return ""
+    sess, name = os.path.basename(parts[-2]), os.path.basename(parts[-1])
+    if sess in ("", ".", "..") or name in ("", ".", ".."):
+        return ""
+    path = os.path.join(WORKSPACE, sess, name)
+    # 纵深防御：解析后的真实路径必须仍落在 workspace 内（防符号链接/残余穿越）
+    try:
+        root = os.path.realpath(WORKSPACE)
+        if os.path.commonpath([root, os.path.realpath(path)]) != root:
+            return ""
+    except ValueError:  # 不同盘符等无法比较的情况
+        return ""
+    return path if os.path.isfile(path) else ""
 
 
 def add_item(i, image, kind, analysis, verdict, prompt):
@@ -492,15 +523,23 @@ def api_start():
 
     requirement = request.form.get("requirement", "").strip()
     base = request.files.get("base_image")
-    if not requirement or not base:
-        return jsonify({"ok": False, "msg": "需求描述和原图都是必填的"}), 400
+    # base_from：把某张历史成图当新底图（痛点三）。二选一：上传新图 或 选历史图。
+    base_from = request.form.get("base_from", "").strip()
+    base_from_path = _resolve_workspace_image(base_from) if base_from else ""
+    if not requirement or (not base and not base_from_path):
+        return jsonify({"ok": False, "msg": "需求描述和原图都是必填的"
+                        "（可上传新图，或从历史成图里挑一张当底图）"}), 400
 
     sess_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     sess_dir = os.path.join(WORKSPACE, sess_id)
     os.makedirs(sess_dir, exist_ok=True)
 
     try:
-        base_path = save_image_optimized(base, os.path.join(sess_dir, "base"))
+        if base:
+            base_path = save_image_optimized(base, os.path.join(sess_dir, "base"))
+        else:
+            base_path = save_image_optimized_from_path(
+                base_from_path, os.path.join(sess_dir, "base"))
         ref_paths = []
         for j, f in enumerate(request.files.getlist("ref_images")):
             if f and f.filename:
@@ -508,6 +547,16 @@ def api_start():
                     save_image_optimized(f, os.path.join(sess_dir, f"ref_{j}")))
     except Exception as e:
         return jsonify({"ok": False, "msg": f"图片无法读取：{e}"}), 400
+
+    # 落一份会话元信息，供"历史成图"列表展示（不含图，随 workspace 一起留存）
+    try:
+        with open(os.path.join(sess_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump({"requirement": requirement,
+                       "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                       "base_from": base_from if base_from_path else ""},
+                      f, ensure_ascii=False)
+    except OSError:
+        pass
 
     with _lock:
         S.update({"state": "connecting", "session_id": sess_id, "iteration": 0,
@@ -678,6 +727,38 @@ def api_finish_now():
     _feedback_event.set()  # 如果正卡在点评等待，也放行
     _confirm_event.set()   # 如果正卡在确认关卡，也放行
     return jsonify({"ok": True})
+
+
+@app.route("/api/history")
+def api_history():
+    """历史成图列表（痛点三）：扫 workspace，列出每个出过图的会话及其所有成图，
+    最新的会话排在前面。供界面挑一张满意的当新底图。"""
+    sessions = []
+    if os.path.isdir(WORKSPACE):
+        for name in sorted(os.listdir(WORKSPACE), reverse=True):
+            d = os.path.join(WORKSPACE, name)
+            if not os.path.isdir(d):
+                continue
+            imgs = sorted(f for f in os.listdir(d)
+                          if f.startswith("iter_") and f.endswith(".png"))
+            if not imgs:
+                continue  # 没出过图的会话不进历史
+            meta = {}
+            mp = os.path.join(d, "meta.json")
+            if os.path.isfile(mp):
+                try:
+                    with open(mp, encoding="utf-8") as f:
+                        meta = json.load(f)
+                except (OSError, ValueError):
+                    meta = {}
+            sessions.append({
+                "session": name,
+                "requirement": meta.get("requirement", ""),
+                "created": meta.get("created", ""),
+                "images": imgs,
+                "count": len(imgs),
+            })
+    return jsonify({"sessions": sessions[:40]})  # 最近 40 个会话，避免列表过长
 
 
 @app.route("/images/<sess>/<name>")

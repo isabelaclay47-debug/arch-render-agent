@@ -10,6 +10,14 @@ chrome-profile/
 
 # 运行期产物：会话图、最终渲染图、服务日志
 workspace/
+logs/
+
+# 守护进程运行期状态（本机私有，勿提交）
+.supervisor_pid
+.supervisor_stop
+
+# Serena 缓存
+.serena/
 
 # 编辑器 / 工具状态
 .omc/

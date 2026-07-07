@@ -192,6 +192,32 @@
   .editor-box textarea { min-height: 60px; margin-top: 12px; }
   .editor-hint { color: var(--taupe); font-size: 12px; margin: 10px 0 0; }
   .editor-hint b { color: var(--wine); }
+
+  /* 历史成图（痛点三：挑一张当新底图） */
+  #baseFromBanner { display: none; align-items: center; gap: 10px; background: var(--paper2);
+                    border: 1px solid var(--wine); border-radius: 3px; padding: 8px 12px;
+                    font-size: 12px; color: var(--wine); margin-bottom: 12px; }
+  #baseFromBanner img { width: 52px; height: 40px; object-fit: cover; border-radius: 2px;
+                        border: 1px solid var(--sand); }
+  #baseFromBanner .x { margin-left: auto; cursor: pointer; color: var(--taupe);
+                       border: 1px solid var(--sand); background: #fff; border-radius: 3px;
+                       padding: 3px 9px; font-size: 11.5px; }
+  #baseFromBanner .x:hover { color: var(--wine); border-color: var(--wine); }
+  #historyList { max-height: 320px; overflow-y: auto; }
+  .hist-empty { color: var(--taupe); font-size: 12px; padding: 8px 0; }
+  .hist-sess { border-top: 1px solid var(--sand); padding: 11px 0 5px; }
+  .hist-sess:first-child { border-top: 0; }
+  .hist-head { font-size: 11.5px; color: var(--taupe); margin-bottom: 7px; line-height: 1.5; }
+  .hist-head b { color: var(--ink); font-weight: 600; }
+  .hist-thumbs { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 5px; }
+  .hist-thumbs figure { margin: 0; flex: none; width: 80px; }
+  .hist-thumbs img { width: 80px; height: 60px; object-fit: cover; border-radius: 2px;
+                     border: 1px solid var(--sand); cursor: zoom-in; display: block; }
+  .hist-thumbs img:hover { border-color: var(--wine); }
+  .hist-use { width: 100%; margin-top: 3px; padding: 4px 0; font-size: 11px; font-weight: 400;
+              border: 1px solid var(--sand); background: #fff; color: var(--taupe);
+              border-radius: 3px; letter-spacing: .5px; }
+  .hist-use:hover { color: var(--cream); background: var(--wine); border-color: var(--wine); }
 </style>
 </head>
 <body>
@@ -227,6 +253,12 @@
       <div class="row" style="margin-top:8px">
         <button class="btn-ghost" type="button" onclick="insertSelectedPreset()">插入选中模块</button>
         <button class="btn-ghost" type="button" onclick="insertPresetPack()">插入推荐组合</button>
+      </div>
+
+      <div id="baseFromBanner">
+        <img id="baseFromThumb" alt="">
+        <span>已选历史成图当新底图，将在<b>全新对话</b>里接着迭代</span>
+        <button type="button" class="x" onclick="clearBaseFrom()">改为上传新图</button>
       </div>
 
       <label>原图 <small>— 必传，建筑形体将被严格锁定</small></label>
@@ -271,6 +303,14 @@
       <button class="btn-primary" id="startBtn" onclick="start()">开 始 渲 染</button>
       <p style="color:var(--taupe);font-size:11.5px;margin:12px 0 0">
         开始前请确认右上角状态灯为绿色（ChatGPT 已登录）——未启动时点「启动 Chrome 去登录」</p>
+    </div>
+
+    <!-- 历史成图：挑一张当新底图（痛点三） -->
+    <div class="card" id="historyCard">
+      <h2>Ⅰ·5 · 历史成图 <small>— 挑一张满意的当新底图，接着迭代</small></h2>
+      <div id="historyList"><div class="hist-empty">加载历史中…</div></div>
+      <button class="btn-ghost" type="button" onclick="loadHistory()"
+              style="margin-top:10px">↻ 刷新历史</button>
     </div>
 
     <!-- 小贴士 -->
@@ -393,7 +433,59 @@ const stateNames = { idle:"未开始", connecting:"连接 Chrome 中…", runnin
                      waiting_feedback:"等待你的点评", editing:"局部修改中",
                      done:"已完成", error:"出错" };
 let sessId = null, rendered = 0, curState = "idle", confirmLoaded = false, latestItems = [];
+let selectedBaseFrom = "", histState = "";   // 痛点三：历史成图当新底图
 const $ = id => document.getElementById(id);
+
+/* ---------------- 历史成图（痛点三） ---------------- */
+async function loadHistory() {
+  const box = $("historyList");
+  try {
+    const { sessions } = await apiJson("/api/history");
+    if (!sessions.length) {
+      box.innerHTML = `<div class="hist-empty">还没有历史成图。完成一次渲染后，可复用的成图会出现在这里。</div>`;
+      return;
+    }
+    box.innerHTML = sessions.map(s => {
+      const thumbs = s.images.map(img => {
+        const url = `/images/${s.session}/${img}`;
+        return `<figure>
+          <img src="${url}" onclick="zoom('${url}')">
+          <button class="hist-use" onclick="useAsBase('${s.session}','${img}')">用作底图</button>
+        </figure>`;
+      }).join("");
+      const when = esc(s.created || s.session);
+      const req = s.requirement
+        ? esc(s.requirement.slice(0, 46)) + (s.requirement.length > 46 ? "…" : "")
+        : "（无需求记录）";
+      return `<div class="hist-sess">
+        <div class="hist-head"><b>${when}</b> · ${s.count} 张　${req}</div>
+        <div class="hist-thumbs">${thumbs}</div>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    box.innerHTML = `<div class="hist-empty">历史加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+function useAsBase(sess, img) {
+  selectedBaseFrom = sess + "/" + img;
+  $("baseInput").value = "";                       // 放弃已上传文件，改用历史成图
+  const url = `/images/${sess}/${img}`;
+  $("baseFromThumb").src = url;
+  $("baseFromBanner").style.display = "flex";
+  $("baseThumbs").innerHTML = `<img src="${url}">`;
+  $("baseHint").textContent = "已选历史成图当底图（点击可改上传新图）";
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function clearBaseFrom() {
+  selectedBaseFrom = "";
+  $("baseFromBanner").style.display = "none";
+  if (!$("baseInput").files.length) {              // 没有上传文件时才清空缩略提示
+    $("baseThumbs").innerHTML = "";
+    $("baseHint").textContent = "点击选择原图";
+  }
+}
 
 // #5：把某轮的 AI 评价（结论+篡改检查明细）一键填入点评框，省去手动复制
 function fillFeedback(idx) {
@@ -498,6 +590,10 @@ async function apiJson(url, options = {}) {
 }
 
 function preview(input, boxId) {
+  if (boxId === "baseThumbs" && input.files.length) {  // 改为上传新图 → 放弃历史底图选择
+    selectedBaseFrom = "";
+    $("baseFromBanner").style.display = "none";
+  }
   const box = $(boxId);
   box.innerHTML = "";
   for (const f of input.files) {
@@ -515,10 +611,13 @@ function picked(name) { return document.querySelector(`input[name=${name}]:check
 async function start() {
   const req = $("requirement").value.trim();
   const base = $("baseInput").files[0];
-  if (!req || !base) { alert("需求描述和原图都是必填的"); return; }
+  if (!req || (!base && !selectedBaseFrom)) {
+    alert("需求描述和原图都是必填的（可上传新图，或从「历史成图」里挑一张当底图）"); return;
+  }
   const fd = new FormData();
   fd.append("requirement", req);
-  fd.append("base_image", base);
+  if (base) fd.append("base_image", base);
+  else fd.append("base_from", selectedBaseFrom);   // 痛点三：用历史成图当底图
   fd.append("quality", picked("quality"));
   fd.append("ratio", picked("ratio"));
   fd.append("review_every", picked("review_every"));
@@ -632,7 +731,9 @@ async function poll() {
     if (s.state === "done") {
       $("doneCard").style.display = "block";
       $("finalPath").textContent = s.final_path;
+      if (histState !== "done") loadHistory();   // 刚出的新成图并入历史列表
     }
+    histState = s.state;
 
     for (; rendered < s.items.length; rendered++) {
       const hint = $("emptyHint"); if (hint) hint.remove();
@@ -694,6 +795,7 @@ async function launchChrome() {
 }
 renderPromptLibrary();
 checkConn();
+loadHistory();
 
 /* ---------------- 局部修改画板 ---------------- */
 let edImg = null, edSource = "", edTool = "brush", strokes = [], drawing = null, erasing = false;

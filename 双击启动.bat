@@ -45,11 +45,21 @@ if defined CHROME (
   echo 你可以稍后在网页里点“启动 Chrome 去登录”，或先安装 Google Chrome。
 )
 
-REM ---- 4) 起服务 + 开操作页 ----
+REM ---- 4) 起"常驻守护服务"（脱离本窗口，崩溃自动重启）----
+REM 用 pythonw（无控制台）+ start 分离，关掉这个黑框 / 关掉 Claude 都不会中断服务。
+set "PYW=.venv-win\Scripts\pythonw.exe"
+if not exist "%PYW%" set "PYW=.venv-win\Scripts\python.exe"
 echo.
-echo 启动服务中... 稍等几秒会自动打开 http://127.0.0.1:5001
-echo 如果页面打不开，等 3 秒手动刷新一下即可。关闭本窗口即停止服务。
-echo.
+echo 启动常驻服务中（已脱离本窗口，关掉这个黑框也不会中断）...
+start "" "%PYW%" supervisor.py
+echo 稍等几秒会自动打开 http://127.0.0.1:5001
 start "" http://127.0.0.1:5001
-".venv-win\Scripts\python.exe" app.py
+echo.
+echo ============================================
+echo  服务已在后台常驻运行：
+echo   - 关闭本窗口 / 关掉 Claude 都不会中断它；程序崩溃会自动重启。
+echo   - 想彻底停止服务，请双击「停止服务.bat」。
+echo   - 出问题想查原因，看 logs\app.log 和 logs\supervisor.log。
+echo ============================================
+echo.
 pause

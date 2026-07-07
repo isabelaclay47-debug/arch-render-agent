@@ -33,9 +33,17 @@ else
   echo "[提示] 没找到 Google Chrome。可稍后在网页里点“启动 Chrome 去登录”，或先安装 Chrome。"
 fi
 
-# ---- 4) 起服务 + 开操作页 ----
+# ---- 4) 起"常驻守护服务"（脱离本窗口，崩溃自动重启）----
+# nohup + disown：关掉终端 / 关掉 Claude 都不会中断服务。
 echo
-echo "启动服务中... 稍等几秒会自动打开 http://127.0.0.1:5001"
-echo "关闭本窗口即停止服务。"
+echo "启动常驻服务中（已脱离本窗口，关掉终端也不会中断）..."
+nohup .venv/bin/python supervisor.py >/dev/null 2>&1 &
+disown
 ( sleep 4; open "http://127.0.0.1:5001" ) &
-.venv/bin/python app.py
+echo "============================================"
+echo " 服务已在后台常驻运行："
+echo "  - 关闭本窗口 / 关掉 Claude 都不会中断它；程序崩溃会自动重启。"
+echo "  - 想彻底停止服务，请双击「停止服务-Mac.command」。"
+echo "  - 出问题想查原因，看 logs/app.log 和 logs/supervisor.log。"
+echo "============================================"
+echo "本窗口可以关闭了。按任意键关闭..."; read -n 1
