@@ -67,6 +67,41 @@ function show(d){
 }
 function copyEn(){ navigator.clipboard.writeText($("en").textContent).then(()=>alert("已复制英文提示词")); }
 
-// runLocalVision 由 Task 12 填充；先占位，本地模式暂用空描述也能拼装
-async function runLocalVision(file){ /* Task 12 覆盖 */ }
+let _florence = null;
+async function loadFlorence(){
+  if(_florence) return _florence;
+  $("descBox").textContent="正在加载本地识图模型（首次较慢）…";
+  const { AutoProcessor, AutoTokenizer, Florence2ForConditionalGeneration, RawImage, env }
+    = await import("/vendor/transformers/transformers.min.js");
+  env.allowRemoteModels=false;                 // 只用本地资产，不联网
+  env.localModelPath="/models/";
+  env.backends.onnx.wasm.wasmPaths="/vendor/transformers/";
+  const id="florence2-large";
+  const device = navigator.gpu ? "webgpu" : "wasm";
+  const model=await Florence2ForConditionalGeneration.from_pretrained(id,{dtype:"fp32",device});
+  const processor=await AutoProcessor.from_pretrained(id);
+  const tokenizer=await AutoTokenizer.from_pretrained(id);
+  _florence={model,processor,tokenizer,RawImage};
+  return _florence;
+}
+
+async function runLocalVision(file){
+  try{
+    const {model,processor,tokenizer,RawImage}=await loadFlorence();
+    $("descBox").textContent="识图中…";
+    const task="<MORE_DETAILED_CAPTION>";
+    const image=await RawImage.fromBlob(file);
+    const vision=await processor(image);
+    const prompts=processor.construct_prompts(task);
+    const text=tokenizer(prompts);
+    const out=await model.generate({...text,...vision,max_new_tokens:256});
+    const decoded=tokenizer.batch_decode(out,{skip_special_tokens:false})[0];
+    const res=processor.post_process_generation(decoded,task,image.size);
+    imageDesc=(res[task]||"").trim();
+    $("descBox").textContent="本地识图：" + (imageDesc||"（未能识别，可手动在想法里补充画面描述）");
+  }catch(e){
+    imageDesc="";
+    $("descBox").textContent="本机无法本地识图（"+e.message+"）。可直接在想法里描述画面后生成。";
+  }
+}
 setEngine("chat");
