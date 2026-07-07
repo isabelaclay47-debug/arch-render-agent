@@ -1,0 +1,9 @@
+# Windows 批处理必须 CRLF，否则 cmd.exe 遇到多行 if 块会解析崩溃、闪退
+*.bat  text eol=crlf
+
+# macOS/Unix 脚本必须 LF
+*.command text eol=lf
+*.sh       text eol=lf
+
+# Python 统一 LF
+*.py text eol=lf
