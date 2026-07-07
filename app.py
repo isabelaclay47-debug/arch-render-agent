@@ -807,13 +807,38 @@ def api_helper_refine():
         client.close()
 
 
+# ---- 历史管理内部目录（一律以 _ 开头，历史列表自动跳过，避免自我列出）----
+TRASH_DIR = os.path.join(WORKSPACE, "_trash")
+FAV_FILE = os.path.join(WORKSPACE, "_favorites.json")
+HANDOFF_DIR = os.path.join(WORKSPACE, "_handoff")
+
+
+def _load_favorites() -> list:
+    """收藏列表：[{session, image}]。文件缺失/损坏都返回空列表。"""
+    try:
+        with open(FAV_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _save_favorites(favs: list):
+    os.makedirs(WORKSPACE, exist_ok=True)
+    with open(FAV_FILE, "w", encoding="utf-8") as f:
+        json.dump(favs, f, ensure_ascii=False)
+
+
 @app.route("/api/history")
 def api_history():
     """历史成图列表（痛点三）：扫 workspace，列出每个出过图的会话及其所有成图，
     最新的会话排在前面。供界面挑一张满意的当新底图。"""
+    favs = {(fv.get("session"), fv.get("image")) for fv in _load_favorites()}
     sessions = []
     if os.path.isdir(WORKSPACE):
         for name in sorted(os.listdir(WORKSPACE), reverse=True):
+            if name.startswith("_"):
+                continue  # 跳过 _trash / _handoff 等内部目录
             d = os.path.join(WORKSPACE, name)
             if not os.path.isdir(d):
                 continue
@@ -834,9 +859,222 @@ def api_history():
                 "requirement": meta.get("requirement", ""),
                 "created": meta.get("created", ""),
                 "images": imgs,
+                "favorites": [im for im in imgs if (name, im) in favs],
                 "count": len(imgs),
             })
     return jsonify({"sessions": sessions[:40]})  # 最近 40 个会话，避免列表过长
+
+
+@app.route("/api/favorites")
+def api_favorites():
+    """所有收藏的图（供顶部「重点」条展示）。过滤掉已被删除的。"""
+    out = []
+    for fv in _load_favorites():
+        sess, img = fv.get("session"), fv.get("image")
+        if sess and img and os.path.isfile(os.path.join(WORKSPACE, sess, img)):
+            out.append({"session": sess, "image": img})
+    return jsonify({"favorites": out})
+
+
+@app.route("/api/favorite", methods=["POST"])
+def api_favorite():
+    """收藏/取消收藏一张图。入参 {session, image, on}。"""
+    data = request.get_json(force=True, silent=True) or {}
+    sess = os.path.basename(str(data.get("session", "")))
+    img = os.path.basename(str(data.get("image", "")))
+    on = bool(data.get("on", True))
+    if not sess or not img:
+        return jsonify({"ok": False, "msg": "缺少 session/image"}), 400
+    favs = _load_favorites()
+    favs = [fv for fv in favs if not (fv.get("session") == sess and fv.get("image") == img)]
+    if on:
+        favs.append({"session": sess, "image": img})
+    _save_favorites(favs)
+    return jsonify({"ok": True, "on": on})
+
+
+# ======================================================================
+#  历史删除 + 回收站（单张 / 整会话都可删，均可恢复）
+# ======================================================================
+
+def _trash_manifest() -> list:
+    try:
+        with open(os.path.join(TRASH_DIR, "manifest.json"), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _save_trash_manifest(items: list):
+    os.makedirs(TRASH_DIR, exist_ok=True)
+    with open(os.path.join(TRASH_DIR, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False)
+
+
+def _drop_favorites(session, image=None):
+    """删除会话/图时同步清掉其收藏项。image 为 None 表示整会话。"""
+    favs = _load_favorites()
+    if image is None:
+        favs = [fv for fv in favs if fv.get("session") != session]
+    else:
+        favs = [fv for fv in favs
+                if not (fv.get("session") == session and fv.get("image") == image)]
+    _save_favorites(favs)
+
+
+@app.route("/api/history_delete", methods=["POST"])
+def api_history_delete():
+    """把一个会话或单张图移入回收站（不真删，可恢复）。入参 {session[, image]}。"""
+    data = request.get_json(force=True, silent=True) or {}
+    sess = os.path.basename(str(data.get("session", "")))
+    image = os.path.basename(str(data.get("image", ""))) if data.get("image") else ""
+    if not sess or sess.startswith("_"):
+        return jsonify({"ok": False, "msg": "无效的会话"}), 400
+    sess_dir = os.path.join(WORKSPACE, sess)
+    if not os.path.isdir(sess_dir):
+        return jsonify({"ok": False, "msg": "找不到该会话"}), 404
+    tid = datetime.now().strftime("%Y%m%d%H%M%S_") + os.urandom(2).hex()
+    dst = os.path.join(TRASH_DIR, tid)
+    os.makedirs(TRASH_DIR, exist_ok=True)
+    when = datetime.now().strftime("%Y-%m-%d %H:%M")
+    manifest = _trash_manifest()
+    try:
+        if image:  # 删单张
+            src = os.path.join(sess_dir, image)
+            if not os.path.isfile(src):
+                return jsonify({"ok": False, "msg": "找不到该图"}), 404
+            os.makedirs(dst, exist_ok=True)
+            shutil.move(src, os.path.join(dst, image))
+            manifest.append({"id": tid, "type": "image", "session": sess,
+                             "image": image, "when": when})
+            _drop_favorites(sess, image)
+        else:       # 删整会话
+            shutil.move(sess_dir, dst)
+            manifest.append({"id": tid, "type": "session", "session": sess,
+                             "when": when})
+            _drop_favorites(sess)
+    except OSError as e:
+        return jsonify({"ok": False, "msg": f"删除失败：{e}"}), 500
+    _save_trash_manifest(manifest)
+    return jsonify({"ok": True, "id": tid})
+
+
+@app.route("/api/trash")
+def api_trash():
+    """回收站列表，最新在前。每项给一张可预览的缩略图。"""
+    items = []
+    for it in reversed(_trash_manifest()):
+        tid = it.get("id", "")
+        if it.get("type") == "image":
+            thumb = f"/trash_images/{tid}/{it.get('image')}"
+        else:
+            d = os.path.join(TRASH_DIR, tid)
+            first = ""
+            if os.path.isdir(d):
+                names = sorted(f for f in os.listdir(d)
+                               if f.startswith("iter_") and f.endswith(".png"))
+                first = names[0] if names else ""
+            thumb = f"/trash_images/{tid}/{first}" if first else ""
+        items.append({**it, "thumb": thumb})
+    return jsonify({"items": items})
+
+
+@app.route("/api/trash_restore", methods=["POST"])
+def api_trash_restore():
+    """从回收站恢复一项到原位置。入参 {id}。"""
+    tid = os.path.basename(str((request.get_json(force=True, silent=True) or {}).get("id", "")))
+    manifest = _trash_manifest()
+    entry = next((x for x in manifest if x.get("id") == tid), None)
+    if not entry:
+        return jsonify({"ok": False, "msg": "回收站里没有这一项"}), 404
+    src = os.path.join(TRASH_DIR, tid)
+    try:
+        if entry["type"] == "image":
+            sess_dir = os.path.join(WORKSPACE, entry["session"])
+            os.makedirs(sess_dir, exist_ok=True)
+            shutil.move(os.path.join(src, entry["image"]),
+                        os.path.join(sess_dir, entry["image"]))
+            if os.path.isdir(src) and not os.listdir(src):
+                os.rmdir(src)
+        else:
+            dst = os.path.join(WORKSPACE, entry["session"])
+            if os.path.exists(dst):
+                return jsonify({"ok": False, "msg": "原会话已存在同名，无法恢复"}), 409
+            shutil.move(src, dst)
+    except OSError as e:
+        return jsonify({"ok": False, "msg": f"恢复失败：{e}"}), 500
+    _save_trash_manifest([x for x in manifest if x.get("id") != tid])
+    return jsonify({"ok": True})
+
+
+@app.route("/api/trash_empty", methods=["POST"])
+def api_trash_empty():
+    """彻底清空回收站（真删，不可恢复）。"""
+    if os.path.isdir(TRASH_DIR):
+        for name in os.listdir(TRASH_DIR):
+            p = os.path.join(TRASH_DIR, name)
+            try:
+                shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+            except OSError:
+                pass
+    _save_trash_manifest([])
+    return jsonify({"ok": True})
+
+
+@app.route("/trash_images/<tid>/<name>")
+def trash_images(tid, name):
+    return send_from_directory(os.path.join(TRASH_DIR, os.path.basename(tid)), name)
+
+
+# ======================================================================
+#  两页互传底图（渲染器 ⇄ 提示词助手）
+# ======================================================================
+
+@app.route("/api/handoff", methods=["POST"])
+def api_handoff():
+    """把一张图暂存给另一页取用。form: to=helper|render，
+    图片来源二选一：上传 image / 或 from='会话/图名' 的 workspace 图。"""
+    to = request.form.get("to", "")
+    if to not in ("helper", "render"):
+        return jsonify({"ok": False, "msg": "to 必须是 helper 或 render"}), 400
+    os.makedirs(HANDOFF_DIR, exist_ok=True)
+    dest_noext = os.path.join(HANDOFF_DIR, to)
+    try:
+        img = request.files.get("image")
+        if img and img.filename:
+            save_image_optimized(img, dest_noext)
+        else:
+            src = _resolve_workspace_image(request.form.get("from", ""))
+            if not src:
+                return jsonify({"ok": False, "msg": "没有可传的图"}), 400
+            save_image_optimized_from_path(src, dest_noext)
+    except Exception as e:
+        return jsonify({"ok": False, "msg": f"图片无法读取：{e}"}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/handoff/<to>")
+def api_handoff_get(to):
+    """目标页取暂存图；不存在返回 404（页面据此判断有没有待接收的图）。"""
+    if to not in ("helper", "render"):
+        return jsonify({"ok": False}), 404
+    path = os.path.join(HANDOFF_DIR, f"{to}.jpg")
+    if not os.path.isfile(path):
+        return jsonify({"ok": False}), 404
+    return send_from_directory(HANDOFF_DIR, f"{to}.jpg")
+
+
+@app.route("/api/handoff_clear", methods=["POST"])
+def api_handoff_clear():
+    """目标页取走后清掉暂存图，避免下次打开又自动填。"""
+    to = (request.get_json(force=True, silent=True) or {}).get("to", "")
+    if to in ("helper", "render"):
+        try:
+            os.remove(os.path.join(HANDOFF_DIR, f"{to}.jpg"))
+        except OSError:
+            pass
+    return jsonify({"ok": True})
 
 
 @app.route("/images/<sess>/<name>")
