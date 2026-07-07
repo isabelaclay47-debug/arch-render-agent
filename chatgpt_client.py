@@ -35,6 +35,14 @@ class ChatGPTError(RuntimeError):
     pass
 
 
+class GenStalledError(ChatGPTError):
+    """生图经过多次自愈（刷新/新开对话/重连）仍未出图。
+
+    与普通 ChatGPTError 的区别：这是**可恢复**的——上层应把会话停在"待重试"
+    状态而不是判定失败结束，用户点一下即可再战。对应需求③/⑦：会话绝不能结束。
+    """
+
+
 class ChatGPTClient:
     def __init__(self, cdp_url: str = CDP_URL, log=print, nudge=None):
         self.cdp_url = cdp_url
@@ -43,12 +51,14 @@ class ChatGPTClient:
         self._pw = None
         self._browser = None
         self._ctx = None
+        self._director_only = False
         self.director_page = None   # 导演对话：全程一个会话
         self.gen_page = None        # 生成对话：每轮新开会话
 
     # ---------- 连接与页面管理 ----------
 
     def connect(self, director_only: bool = False):
+        self._director_only = director_only
         self._pw = sync_playwright().start()
         try:
             self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
@@ -73,6 +83,67 @@ class ChatGPTClient:
         if not director_only:
             self._open_chat(self.gen_page)  # 立即导航，别留一个吓人的 about:blank
         self.log("已接管 Chrome，ChatGPT 登录状态正常。可以把专用 Chrome 最小化，回操作页面看进度。")
+
+    def _page_alive(self, page) -> bool:
+        """页面/上下文/浏览器是否还活着（一次极廉价的 eval 探活）。"""
+        if page is None:
+            return False
+        try:
+            page.evaluate("1")
+            return True
+        except Exception:
+            return False
+
+    def _reconnect(self):
+        """整体重连：CDP 断开 / 标签被关（Target page/context/browser closed）时的兜底。
+
+        重建 pw→browser→context→pages。注意：导演对话页会因此丢失原有对话上下文——
+        这是硬崩溃下的无奈代价，但比整个任务结束要好；仅在页面确实死掉时才走这条路。
+        """
+        self.log("检测到浏览器/页面已断开，正在重连专用 Chrome 并重开页面…")
+        try:
+            if self._pw:
+                self._pw.stop()
+        except Exception:
+            pass
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
+        if not self._browser.contexts:
+            raise ChatGPTError("重连后浏览器没有可用上下文——请检查专用 Chrome 是否还开着。")
+        self._ctx = self._browser.contexts[0]
+        self.director_page = self._ctx.new_page()
+        self._open_chat(self.director_page)
+        if not self._director_only:
+            self.gen_page = self._ctx.new_page()
+            self._open_chat(self.gen_page)
+        self.log("已重连 ChatGPT，继续任务。")
+
+    def _current_page(self, role: str):
+        """按角色取当前页（重连后引用会变，始终以 self.* 为准）。"""
+        return self.gen_page if role == "gen" else self.director_page
+
+    def _recover_before_retry(self, role: str, attempt: int, max_attempts: int,
+                              expect_image: bool, force_reconnect: bool = False):
+        """一次自愈：页面死了就整体重连；否则——生图开新对话（新标签重发），
+        文本只刷新（保住导演对话上下文，绝不新开对话）。对应需求：开新页面 + 重试结合。"""
+        kind = "生图" if expect_image else "文本"
+        self.log(f"{kind}这一步没成功，自动干预后重试（第 {attempt + 1}/{max_attempts} 次）…")
+        page = self._current_page(role)
+        if force_reconnect or not self._page_alive(page):
+            try:
+                self._reconnect()
+                return
+            except Exception as e:
+                self.log(f"重连失败（{e}），改为刷新页面再试一次。")
+                page = self._current_page(role)
+        try:
+            if role == "gen":
+                self.new_generation_chat()      # 生图：换个干净的新对话重发，救活假死的标签
+            elif page is not None:
+                page.reload(wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(3000)
+        except Exception:
+            pass
 
     def close(self):
         try:
@@ -103,39 +174,48 @@ class ChatGPTClient:
     # ---------- 发消息 ----------
 
     def send(self, page, text: str, image_paths=None, expect_image=False) -> str:
-        """发一条消息（可带图），阻塞等回复完成，返回回复文本。
+        """发一条消息（可带图），阻塞等回复完成，返回回复文本。自愈式重试。
 
-        文本步骤（导演对话）等不到回复时会自动"刷新+重发"，因为最常见的失败是
-        消息压根没发出去（发送按钮没触发/被弹窗挡住），重发不消耗生图额度、能救回大多数卡死；
-        生图步骤重发会重复扣额度，只尝试一次。
+        无论文本还是生图，等不到回复都会自动干预后重试（默认 3 次）：
+          · 页面/浏览器死了（Target page/context/browser closed）→ 整体重连；
+          · 生图卡死 → 换一个新对话重发（救活假死的标签，代价是重复扣额度，用户已认可）；
+          · 文本卡死 → 只刷新页面重发（保住导演对话上下文，绝不新开对话）。
+        生图 3 次自愈仍不出图 → 抛 GenStalledError，上层停在"待重试"而非结束会话。
         """
         image_paths = image_paths or []
         timeout = IMAGE_TIMEOUT if expect_image else TEXT_TIMEOUT
-        max_attempts = 1 if expect_image else 3
+        max_attempts = 3
+        # 角色决定自愈方式：gen 可开新对话重发，director 必须保住上下文只刷新
+        role = "gen" if page is self.gen_page else "director"
         last_err = None
 
         for attempt in range(1, max_attempts + 1):
-            before = page.locator(SEL["assistant"]).count()
-            if image_paths:
-                self._attach_files(page, image_paths)
-            editor = page.locator(SEL["editor"])
-            editor.click()
-            page.keyboard.insert_text(text)
-            page.wait_for_timeout(500)
-            self._click_send(page)
+            page = self._current_page(role)  # 重连后引用会变，每次都取最新的
             try:
+                before = page.locator(SEL["assistant"]).count()
+                if image_paths:
+                    self._attach_files(page, image_paths)
+                editor = page.locator(SEL["editor"])
+                editor.click()
+                page.keyboard.insert_text(text)
+                page.wait_for_timeout(500)
+                self._click_send(page)
                 self._wait_reply_done(page, before, timeout, expect_image)
                 return self.last_reply_text(page)
             except ChatGPTError as e:
                 last_err = e
                 if attempt < max_attempts:
-                    self.log(f"这一步 {timeout}s 没等到回复（多半消息没发出去），"
-                             f"刷新页面后重发（第 {attempt + 1}/{max_attempts} 次）…")
-                    try:
-                        page.reload(wait_until="domcontentloaded", timeout=60000)
-                    except Exception:
-                        pass
-                    page.wait_for_timeout(3000)
+                    self._recover_before_retry(role, attempt, max_attempts, expect_image)
+            except Exception as e:
+                # Playwright 抛的非 ChatGPTError（标签被关、CDP 断开等）→ 强制重连再试
+                last_err = ChatGPTError(f"页面操作异常：{e}")
+                if attempt < max_attempts:
+                    self._recover_before_retry(role, attempt, max_attempts, expect_image,
+                                               force_reconnect=True)
+        if expect_image:
+            raise GenStalledError(
+                f"生图连续 {max_attempts} 次自愈仍未出图（{last_err}）。可能额度用尽或排队——"
+                "任务已暂停但未结束，可点「刷新 ChatGPT / 重试本轮」再试。")
         raise last_err
 
     def _attach_files(self, page, paths):
