@@ -225,6 +225,22 @@ def translate_instruction_prompt(zh_instruction: str) -> str:
 </英文提示词>"""
 
 
+def regional_understanding_prompt(instruction: str) -> str:
+    """局部修改前的「理解确认」：让导演看着[原图, 红色标记图]用中文复述它对这次修改的理解，
+    先交建筑师确认没理解错，再真正生图——避免误改浪费额度。只回中文理解、先不生成图片。"""
+    return f"""这是一次**局部修改前的理解确认**，先不要生成任何图片。第一张是要修改的图，第二张用红色标出了**唯一允许修改**的区域。建筑师的修改指令是：「{instruction}」。
+
+请用中文简洁复述你的理解，让建筑师确认你没理解错：
+- 你将在红色区域**内**具体做什么改动；
+- 你会保持红色区域**外**的一切像素不动（建筑形体 / 天空 / 配景 / 色调 / 构图）。
+若指令有歧义或你需要澄清的地方，也在理解里直接点出来。
+
+只输出：
+<理解>
+（中文，2~4 句，说清"改什么、保持什么"）
+</理解>"""
+
+
 def regional_qc_message(instruction: str) -> str:
     """局部修改后的检查：只允许标记区域变化（中文分析给建筑师看）。"""
     return f"""这是一次局部修改的检查。第一张是修改前的图，第二张是修改后的图。当时的修改指令是：「{instruction}」，且只允许改动图中被红色标记过的那个区域。请逐项检查：
@@ -300,6 +316,22 @@ def refine_message(fix_instruction_en: str, quality: str = "标准") -> str:
 1. Everything not listed above — building form/floors/windows/members, composition, camera, sky, entourage, overall color and lighting mood — must stay pixel-identical to this image; do not touch or re-render it.
 2. Keep straight lines straight and text legible — no bowing, warping or garbling.
 3. Apply only the listed local improvements; do not change the overall look or composition.
+{GENERATION_BASICS}"""
+
+
+def regional_edit_with_material_message(instruction_en: str) -> str:
+    """局部修改·材质替换：图1待改、图2红色标记唯一可改区、图3目标材质样板。
+    只把标记区材质换成图3所示材质，且服从原图光线/透视/阴影，区域外不动。"""
+    return f"""I uploaded three images: the first is the image to edit; the second marks, in red, the ONLY region you may change; the third is a MATERIAL sample to apply. Output the edited image directly — no questions, no explanation.
+
+[Edit instruction — apply ONLY inside the red-marked region]
+Replace the surface material inside the red-marked region with the material shown in the third image. {instruction_en}
+Match the third image's material look (color, texture, finish, reflectivity) but make it obey the first image's existing lighting, perspective, shadows and the region boundaries — realistic and seamless, not a flat paste.
+
+[Iron rules]
+1. Everything OUTSIDE the red mark must stay pixel-identical to the first image — building, sky, entourage, color and composition included.
+2. The red marks themselves must NOT appear in the output.
+3. Keep straight lines straight and all text legible and undistorted.
 {GENERATION_BASICS}"""
 
 
@@ -379,12 +411,12 @@ def helper_refine_prompt(draft: str, prev_zh: str = "", feedback: str = "") -> s
 【用户意见】
 {feedback}
 
-如仍有底图，请结合图面细节一并考虑。{_BILINGUAL_OUTPUT_SPEC}"""
+如仍有底图，请结合图面细节一并考虑。在 <理解> 段里先用中文**复述你这次抓住了用户的哪些意见、具体改了什么**，让用户确认你没跑偏。{_BILINGUAL_OUTPUT_SPEC}"""
     draft_block = f"\n\n【用户的初步想法/草稿】\n{draft}" if draft.strip() else ""
     return f"""你是资深建筑可视化提示词导演。用户上传了一张图作为底图参照。请**仔细看图**，
 识别建筑类型、材质、光线、构图与风格，结合用户草稿，产出一份专业、具体、可执行的生图提示词。{draft_block}
 
-{_BILINGUAL_OUTPUT_SPEC}"""
+在 <理解> 段里，先用中文**如实复述你对用户意图和图面的理解**，并明确点出你做了哪些假设、哪里可能有歧义——好让用户先确认你真的理解对了，再看下面的提示词；若理解有偏差，用户会用「按我的意见改一版」纠正你。{_BILINGUAL_OUTPUT_SPEC}"""
 
 
 # ======================================================================
@@ -424,8 +456,20 @@ def build_prompt_locally(intent: str, image_desc: str, preset_texts=None) -> dic
         "building form pixel-faithful to the base image.")
     prompt_en = f"{en_head}\n\n{GENERATION_BASICS}"
 
-    understanding_zh = (
-        "我据此把你的想法、底图画面和勾选的专业模块，整理成了下面这份完整的中英提示词——"
-        "你可以直接复制英文版拿去生图工具里用。")
+    # 如实复述"我理解到的东西"，而不是一句套话——让你一眼看出有没有搞错你的想法（需求⑧）
+    recap = []
+    if intent:
+        recap.append(f"你想要的是「{intent}」")
+    if image_desc:
+        recap.append(f"底图我识别到的是「{image_desc}」")
+    if preset_texts:
+        recap.append("你还勾了这些专业要求：" + "；".join(preset_texts))
+    if recap:
+        understanding_zh = ("我这样理解你的想法——" + "；".join(recap)
+                            + "。如果哪里理解错了，在下面「不满意就说一句让我改」里纠正我，"
+                              "我会据此重拼一版。")
+    else:
+        understanding_zh = ("你还没写想法、也没有识图描述，我先按「保持建筑形体、提升材质与光影"
+                            "质感」的通用专业标准生成。写一句你的想法，我能更贴合你的意图。")
     return {"understanding_zh": understanding_zh,
             "prompt_zh": prompt_zh, "prompt_en": prompt_en}

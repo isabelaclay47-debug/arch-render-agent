@@ -169,7 +169,48 @@ class ChatGPTClient:
         self._open_chat(self.director_page)
 
     def new_generation_chat(self):
-        self._open_chat(self.gen_page)
+        """每轮生成都换一个**全新标签页**再导航——旧标签生成一两张后 ChatGPT 常
+        连接重置/假死（用户实测：一个窗口约 2 张图就开始报错）。换新标签最干净。
+        瞬时错误自动换标签重试；彻底失败抛 GenStalledError（可恢复，不结束会话）。"""
+        old = self.gen_page
+        self.gen_page = self._open_fresh_gen_chat()
+        if old is not None and old is not self.gen_page:
+            try:
+                old.close()   # 关掉用旧了的标签，避免标签堆积
+            except Exception:
+                pass
+
+    def _open_fresh_gen_chat(self, tries: int = 3):
+        """开一个全新标签页并导航到 ChatGPT 新对话。ERR_CONNECTION_RESET 等瞬时错误
+        自动换新标签重试；上下文都没了则整体重连；全失败抛 GenStalledError。"""
+        last = None
+        for i in range(tries):
+            try:
+                page = self._ctx.new_page()
+            except Exception as e:               # 上下文/浏览器没了 → 整体重连，用重连后的 gen_page
+                last = e
+                try:
+                    self._reconnect()
+                    return self.gen_page
+                except Exception as e2:
+                    last = e2
+                    time.sleep(1.5)
+                    continue
+            try:
+                page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(2000)
+                return page
+            except Exception as e:
+                last = e
+                self.log(f"打开 ChatGPT 新对话失败（{str(e)[:70]}），换个新标签重试（{i + 1}/{tries}）…")
+                try:
+                    page.close()
+                except Exception:
+                    pass
+                time.sleep(1.5)
+        raise GenStalledError(
+            f"多次开 ChatGPT 新对话都连接失败（{last}）——已暂停但未结束，可点「刷新 / 重试本轮」再试，"
+            "或看专用 Chrome 是否断网/被限速。")
 
     # ---------- 发消息 ----------
 
@@ -245,14 +286,17 @@ class ChatGPTClient:
             pass
         page.keyboard.press("Enter")  # 兜底
 
-    RELOAD_INTERVAL = 90  # 页面无动静超过这个秒数就自动刷新（ChatGPT 网页时不时假死）
+    RELOAD_INTERVAL = 90   # 页面无动静（非流式）超过这个秒数就自动刷新（ChatGPT 网页时不时假死）
+    STUCK_CEILING = 180    # 生图即使一直显示"生成中"，超过这个秒数仍没出图也强制刷新一次——
+                           # 破解"页面一直转圈假思考、自动刷新永不触发"导致干等到总超时的假死。
 
     def _wait_reply_done(self, page, before_count: int, timeout: int, expect_image: bool):
         deadline = time.time() + timeout
         last_activity = time.time()
+        last_reload = time.time()   # 上次刷新/本步开始的时刻；**不被流式指示重置**，专供强制上限用
 
         def reload_page(reason: str):
-            nonlocal last_activity
+            nonlocal last_activity, last_reload
             self.log(f"{reason}，自动刷新 ChatGPT 页面重新检查…")
             try:
                 page.reload(wait_until="domcontentloaded", timeout=60000)
@@ -260,6 +304,16 @@ class ChatGPTClient:
                 pass
             page.wait_for_timeout(3000)
             last_activity = time.time()
+            last_reload = time.time()
+
+        def force_ceiling() -> bool:
+            """生图即使页面一直"生成中"，超过 STUCK_CEILING 秒仍没出图就强制刷新一次。
+            这条不看 is_streaming（转圈也照样干预），是真正的"卡死自动干预"兜底。"""
+            if (expect_image and self._last_image_handle(page) is None
+                    and time.time() - last_reload > self.STUCK_CEILING):
+                reload_page(f"生图已超过 {self.STUCK_CEILING}s 仍未出图，强制刷新排除页面假死")
+                return True
+            return False
 
         def check_nudge() -> bool:
             if self.nudge and self.nudge.is_set():
@@ -285,6 +339,8 @@ class ChatGPTClient:
             check_nudge()
             if time.time() - last_activity > self.RELOAD_INTERVAL:
                 reload_page("回复迟迟未出现，页面可能卡住")
+            else:
+                force_ceiling()   # 生图转圈假死的强制上限（不看 is_streaming）
             page.wait_for_timeout(1000)
         else:
             raise ChatGPTError(f"等了 {timeout}s 没有等到回复开始，请看 Chrome 里是否有异常弹窗。")
@@ -309,6 +365,8 @@ class ChatGPTClient:
                     if time.time() - last_activity > self.RELOAD_INTERVAL:
                         reload_page("生成似乎结束但图片没出现，页面可能假死")
                         quiet = 0
+            if force_ceiling():   # 一直"生成中"转圈也照样兜底强制刷新
+                quiet = 0
             page.wait_for_timeout(1000)
         if expect_image:
             raise ChatGPTError(f"等了 {timeout}s 图片仍未生成完成（可能额度用尽或排队），请到 Chrome 里确认。")

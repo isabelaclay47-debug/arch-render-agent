@@ -76,8 +76,30 @@
   .drop:hover { border-color: var(--wine); color: var(--wine); background: #fff; }
   .drop input { display: none; }
   .thumbs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .thumb-wrap { position: relative; width: 64px; height: 48px; }
   .thumbs img { width: 64px; height: 48px; object-fit: cover; border-radius: 2px;
-                border: 1px solid var(--sand); }
+                border: 1px solid var(--sand); cursor: zoom-in; display: block; }
+  .thumb-btn { position: absolute; width: 17px; height: 17px; line-height: 15px;
+               padding: 0; border: none; border-radius: 50%; cursor: pointer;
+               font-size: 12px; text-align: center; color: #fff;
+               box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+  .thumb-del { top: -6px; right: -6px; background: var(--wine, #8a2e2e); }
+  .thumb-ann { top: -6px; left: -6px; background: var(--taupe, #6b6153); font-size: 10px; }
+  .thumb-btn:hover { filter: brightness(1.15); }
+  /* 素材库 */
+  .asset-lib { border: 1px solid var(--sand); border-radius: 3px; padding: 8px; margin-top: 4px; background: #fff; }
+  .asset-tabs { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+  .asset-tab { padding: 4px 12px; border: 1px solid var(--sand); background: var(--paper2, #fff);
+               border-radius: 999px; cursor: pointer; font-size: 12px; color: var(--ink); }
+  .asset-tab.on { background: var(--wine); color: var(--cream); border-color: var(--wine); }
+  .asset-grid { display: flex; gap: 8px; flex-wrap: wrap; min-height: 20px; }
+  .asset-cell { position: relative; width: 72px; }
+  .asset-cell img { width: 72px; height: 54px; object-fit: cover; border-radius: 2px;
+                    border: 1px solid var(--sand); cursor: zoom-in; display: block; }
+  .asset-use { width: 100%; margin-top: 3px; padding: 2px 0; font-size: 11px; cursor: pointer;
+               border: 1px solid var(--sand); border-radius: 2px; background: var(--ink); color: var(--cream); }
+  .asset-use:hover { filter: brightness(1.12); }
+  .asset-empty { font-size: 12px; color: var(--taupe); padding: 4px 2px; }
 
   .pills { display: flex; gap: 8px; flex-wrap: wrap; }
   .pills input { display: none; }
@@ -338,6 +360,20 @@
         <div class="thumbs" id="refThumbs"></div>
       </div>
 
+      <!-- 素材库：导入本地图片长期存起来，供①当意向图 ②配景贴图 ③材质换面 -->
+      <label>素材库 <small>— 导入本地图片存起来随时复用</small></label>
+      <div class="asset-lib">
+        <div class="asset-tabs">
+          <button type="button" class="asset-tab on" data-cat="意向" onclick="setAssetCat('意向')">意向</button>
+          <button type="button" class="asset-tab" data-cat="配景" onclick="setAssetCat('配景')">配景</button>
+          <button type="button" class="asset-tab" data-cat="材质" onclick="setAssetCat('材质')">材质</button>
+          <span style="flex:1"></span>
+          <button type="button" class="btn-ghost" style="padding:4px 12px" onclick="assetImportInput.click()">+ 导入</button>
+          <input type="file" id="assetImportInput" accept="image/*" multiple style="display:none" onchange="importAssets(this)">
+        </div>
+        <div class="asset-grid" id="assetGrid"></div>
+      </div>
+
       <label>生成画质</label>
       <div class="pills" id="qualityPills">
         <label><input type="radio" name="quality" value="标准" checked><span>标准</span></label>
@@ -466,6 +502,17 @@
 </div>
 
 <div id="lightbox" onclick="this.style.display='none'"><img id="lightboxImg"></div>
+<!-- 需求⑩：每张成图的详细提示词弹层 -->
+<div id="promptModal" onclick="if(event.target===this)this.style.display='none'"
+     style="position:fixed;inset:0;background:rgba(58,53,47,.6);display:none;align-items:center;justify-content:center;z-index:100">
+  <div style="background:var(--paper);max-width:640px;width:90%;max-height:80vh;overflow:auto;padding:18px;border-radius:4px;border:1px solid var(--sand)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <b style="color:var(--wine)">该图的详细提示词</b>
+      <button class="tool" onclick="$('promptModal').style.display='none'">关闭</button>
+    </div>
+    <div id="promptModalBody"></div>
+  </div>
+</div>
 
 <script src="/static/annotate.js"></script>
 
@@ -492,6 +539,10 @@
     <canvas id="editCanvas"></canvas>
     <div class="editor-hint">用红色标出<b>唯一允许修改</b>的区域——AI 将被严格要求不动区域外的任何内容。<br>
       手画/涂抹：按住拖动 · 直线/箭头：拖出 · 框选：拖出矩形 · 多边形套索：连续点、<b>双击闭合</b> · 橡皮擦：拖过要删掉的标记 · <b>线宽</b>滑块调粗细</div>
+    <div id="edMaterialNote" style="display:none;font-size:12px;color:var(--wine);margin-top:8px">
+      <img id="edMaterialThumb" style="width:34px;height:26px;object-fit:cover;border-radius:2px;vertical-align:middle;border:1px solid var(--sand)">
+      已选材质，提交后将把圈出区域换成它 <button type="button" class="tool" style="padding:1px 8px" onclick="clearMaterial()">取消材质</button>
+    </div>
     <textarea id="editInstruction" placeholder="这个区域要怎么改？例如：把入口雨棚改成木格栅材质 / 去掉这个人 / 这块墙面换成清水混凝土"></textarea>
     <div class="row">
       <button class="btn-blue" style="flex:1" onclick="submitEdit()">提交局部修改（只改圈出的部分）</button>
@@ -520,6 +571,8 @@ async function loadHistory() {
       box.innerHTML = `<div class="hist-empty">还没有历史成图。完成一次渲染后，可复用的成图会出现在这里。</div>`;
       return;
     }
+    window._histMeta = {};   // 需求⑩：缓存每张成图各自的提示词元数据，供逐图查看
+    sessions.forEach(s => { window._histMeta[s.session] = s.item_meta || {}; });
     box.innerHTML = sessions.map(s => {
       const favSet = new Set(s.favorites || []);
       const thumbs = s.images.map(img => {
@@ -531,6 +584,7 @@ async function loadHistory() {
           <button class="hist-del-img" title="删除这张（进回收站）" onclick="delHistory('${s.session}','${img}')">×</button>
           <button class="hist-use" onclick="useAsBase('${s.session}','${img}')">用作底图</button>
           <button class="hist-send" onclick="sendToHelper('${s.session}','${img}')">→ 发给助手</button>
+          <button class="hist-send" onclick="showItemPrompt('${s.session}','${img}')">📄 提示词</button>
         </figure>`;
       }).join("");
       const when = esc(s.created || s.session);
@@ -781,14 +835,58 @@ function preview(input, boxId) {
   }
   const box = $(boxId);
   box.innerHTML = "";
-  for (const f of input.files) {
+  const isRef = boxId === "refThumbs";
+  [...input.files].forEach((f, idx) => {
+    const url = URL.createObjectURL(f);
+    const wrap = document.createElement("div");
+    wrap.className = "thumb-wrap";
     const img = document.createElement("img");
-    img.src = URL.createObjectURL(f);
-    box.appendChild(img);
-  }
+    img.src = url; img.title = "点击放大查看是否正确";
+    img.onclick = (e) => { e.stopPropagation(); zoom(url); };          // #1 放大查看
+    wrap.appendChild(img);
+    if (isRef) {                                                        // #3 意向图也能标注
+      const ann = document.createElement("button");
+      ann.type = "button"; ann.className = "thumb-btn thumb-ann";
+      ann.textContent = "✏"; ann.title = "标注这张意向图";
+      ann.onclick = (e) => { e.stopPropagation(); annotateRef(idx); };
+      wrap.appendChild(ann);
+    }
+    const del = document.createElement("button");                      // #2 移除已选图（不必替换）
+    del.type = "button"; del.className = "thumb-btn thumb-del";
+    del.textContent = "×"; del.title = "移除这张";
+    del.onclick = (e) => { e.stopPropagation(); removeThumb(input, boxId, idx); };
+    wrap.appendChild(del);
+    box.appendChild(wrap);
+  });
   $(boxId === "baseThumbs" ? "baseHint" : "refHint").textContent =
-    input.files.length ? `已选 ${input.files.length} 张（点击可重选）` :
+    input.files.length ? `已选 ${input.files.length} 张（点图放大 · ×移除${isRef ? " · ✏标注" : ""}）` :
     (boxId === "baseThumbs" ? "点击选择原图" : "点击选择意向图");
+}
+
+// #2 从 <input type=file> 里移除某一张（重建 FileList，不必整体替换）
+function removeThumb(input, boxId, idx) {
+  const dt = new DataTransfer();
+  [...input.files].forEach((f, i) => { if (i !== idx) dt.items.add(f); });
+  input.files = dt.files;
+  if (boxId === "baseThumbs") { selectedBaseFrom = ""; $("baseFromBanner").style.display = "none"; }
+  preview(input, boxId);
+}
+
+// #3 标注某张意向图：标完把带标注的 PNG 贴回该位置
+function annotateRef(idx) {
+  const f = $("refInput").files[idx];
+  if (!f) return;
+  if (typeof openAnnotate !== "function") { alert("标注模块未加载，刷新页面再试"); return; }
+  openAnnotate(URL.createObjectURL(f), (flatDataUrl) => {
+    fetch(flatDataUrl).then(r => r.blob()).then(blob => {
+      const nm = (f.name || "意向图").replace(/\.\w+$/, "") + "_标注.png";
+      const marked = new File([blob], nm, { type: "image/png" });
+      const dt = new DataTransfer();
+      [...$("refInput").files].forEach((ff, i) => dt.items.add(i === idx ? marked : ff));
+      $("refInput").files = dt.files;
+      preview($("refInput"), "refThumbs");
+    });
+  });
 }
 
 // 拖拽上传：把拖入的文件塞进对应 <input type=file> 再走既有 preview
@@ -896,6 +994,22 @@ async function nudgeChatGPT() {
 
 function zoom(src) { $("lightboxImg").src = src; $("lightbox").style.display = "flex"; }
 
+// 需求⑩：展示某张历史成图各自的详细提示词/分析/结论
+function showItemPrompt(sess, img) {
+  const meta = (window._histMeta && window._histMeta[sess] && window._histMeta[sess][img]) || null;
+  const body = $("promptModalBody");
+  if (!meta || (!meta.prompt && !meta.analysis && !meta.verdict)) {
+    body.innerHTML = `<div style="color:var(--taupe);font-size:13px">这张图没有留存详细提示词（多半是更新此功能前生成的旧图）。</div>`;
+  } else {
+    const h = t => `<div style="color:var(--wine);font-weight:600;margin:10px 0 3px">${t}</div>`;
+    body.innerHTML =
+      h(meta.kind === "edit" ? "局部修改指令" : "本轮提示词") + `<pre>${esc(meta.prompt || "（无）")}</pre>` +
+      (meta.verdict ? h("结论") + `<pre>${esc(meta.verdict)}</pre>` : "") +
+      (meta.analysis ? h("篡改检查明细") + `<pre>${esc(meta.analysis)}</pre>` : "");
+  }
+  $("promptModal").style.display = "flex";
+}
+
 /* ---------------- 底图标注工作室（阶段1，annotate.js）---------------- */
 function annotateBase() {
   let src = "";
@@ -917,6 +1031,86 @@ function annotateBase() {
     });
   });
 }
+
+/* ---------------- 素材库（导入/复用；需求⑧素材）---------------- */
+let assetCat = "意向";
+function setAssetCat(c) {
+  assetCat = c;
+  document.querySelectorAll(".asset-tab").forEach(b => b.classList.toggle("on", b.dataset.cat === c));
+  loadAssets();
+}
+async function loadAssets() {
+  const g = $("assetGrid");
+  try {
+    const d = await apiJson("/api/assets?category=" + encodeURIComponent(assetCat));
+    g.innerHTML = "";
+    if (!d.assets.length) {
+      g.innerHTML = `<div class="asset-empty">— 还没有${assetCat}素材，点「+ 导入」添加 —</div>`;
+      return;
+    }
+    for (const a of d.assets) {
+      const cell = document.createElement("div"); cell.className = "asset-cell";
+      const img = document.createElement("img"); img.src = a.url; img.title = "点击放大";
+      img.onclick = (e) => { e.stopPropagation(); zoom(a.url); };
+      cell.appendChild(img);
+      const act = document.createElement("button"); act.type = "button"; act.className = "asset-use";
+      if (assetCat === "意向") { act.textContent = "用作意向图"; act.onclick = () => useAssetAsRef(a); }
+      else if (assetCat === "配景") { act.textContent = "贴到标注"; act.onclick = () => stampAsset(a); }
+      else { act.textContent = "换此材质"; act.onclick = () => pickMaterial(a); }
+      cell.appendChild(act);
+      const del = document.createElement("button"); del.type = "button";
+      del.className = "thumb-btn thumb-del"; del.textContent = "×"; del.title = "删除素材";
+      del.onclick = (e) => { e.stopPropagation(); delAsset(a.id); };
+      cell.appendChild(del);
+      g.appendChild(cell);
+    }
+  } catch (e) { g.innerHTML = `<div class="asset-empty">素材加载失败</div>`; }
+}
+async function importAssets(input) {
+  if (!input.files.length) return;
+  const fd = new FormData(); fd.append("category", assetCat);
+  for (const f of input.files) fd.append("images", f);
+  try {
+    const j = await apiJson("/api/asset_import", { method: "POST", body: fd });
+    if (!j.ok) throw new Error(j.msg || "导入失败");
+  } catch (e) { alert("导入失败：" + e.message); }
+  input.value = ""; loadAssets();
+}
+async function delAsset(id) {
+  if (!confirm("删除这个素材？")) return;
+  await fetch("/api/asset_delete", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+  loadAssets();
+}
+// B：把某素材当意向图 → 取图为文件塞进 refInput，参与生图
+async function useAssetAsRef(a) {
+  try {
+    const blob = await (await fetch(a.url)).blob();
+    const ext = (blob.type || "").includes("png") ? "png" : "jpg";
+    const file = new File([blob], (a.name || "素材") + "_意向." + ext, { type: blob.type || "image/jpeg" });
+    const dt = new DataTransfer();
+    for (const f of $("refInput").files) dt.items.add(f);
+    dt.items.add(file);
+    $("refInput").files = dt.files;
+    preview($("refInput"), "refThumbs");
+  } catch (e) { alert("加入意向图失败：" + e.message); }
+}
+// C：选中配景后，打开底图标注会把它作为图章贴入（见 annotateBase / annotate.js stamp）
+function stampAsset(a) {
+  window._pendingStamp = a;
+  if (typeof openAnnotate === "function" && (($("baseInput").files[0]) || selectedBaseFrom)) {
+    annotateBase();   // 直接进标注工作室，openAnnotate 会消费 _pendingStamp
+  } else {
+    alert("已选中该配景。先选/传一张原图，再点「✏️ 标注底图」，它会作为图章贴入，可拖动缩放。");
+  }
+}
+// D：选中材质后，到点评阶段圈选局部修改提交时按此材质替换（见 submitEdit）
+function pickMaterial(a) {
+  window._pendingMaterial = a;
+  if (typeof refreshMaterialNote === "function") refreshMaterialNote();
+  alert("已选中该材质「" + (a.name || "素材") + "」。到点评阶段点某张图的「🖌 圈选局部修改」，用钢笔/套索圈出区域后提交，即按此材质替换（区域外不动）。");
+}
+loadAssets();
 
 /* ---------------- 在线更新（需求⑤）---------------- */
 async function checkUpdate() {
@@ -1072,6 +1266,7 @@ function openEditor(imageName) {
   }
   edSource = imageName; strokes = []; drawing = null;
   $("editInstruction").value = "";
+  refreshMaterialNote();
   edImg = new Image();
   edImg.onload = () => {
     const cap = 1536, sc = Math.min(1, cap / Math.max(edImg.width, edImg.height));
@@ -1082,6 +1277,14 @@ function openEditor(imageName) {
   };
   edImg.src = `/images/${sessId}/${imageName}`;
 }
+
+// 材质换面：编辑器里显示/清除所选材质样板
+function refreshMaterialNote() {
+  const m = window._pendingMaterial, box = $("edMaterialNote");
+  if (m && m.url) { $("edMaterialThumb").src = m.url; box.style.display = "block"; }
+  else box.style.display = "none";
+}
+function clearMaterial() { window._pendingMaterial = null; refreshMaterialNote(); }
 
 function closeEditor() { $("editor").style.display = "none"; }
 function setTool(t) {
@@ -1212,11 +1415,13 @@ async function submitEdit() {
   const instruction = $("editInstruction").value.trim();
   if (!strokes.length) { alert("请先用上面的工具在图上标红要修改的区域（多边形套索需双击闭合）"); return; }
   if (!instruction) { alert("请写清楚圈出的区域要怎么改"); return; }
+  const body = { source_image: edSource, instruction, marked: canvas.toDataURL("image/png") };
+  // 材质换面（素材·材质）：带上所选材质样板，让 AI 只把圈选区换成该材质
+  if (window._pendingMaterial && window._pendingMaterial.file) body.material = window._pendingMaterial.file;
   const j = await (await fetch("/api/regional_edit", { method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ source_image: edSource, instruction,
-                           marked: canvas.toDataURL("image/png") }) })).json();
+    headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) })).json();
   if (!j.ok) { alert(j.msg); return; }
+  window._pendingMaterial = null;
   closeEditor();
 }
 

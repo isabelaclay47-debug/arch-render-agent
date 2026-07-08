@@ -10,7 +10,8 @@
 
   const TOOLS = [
     ["brush", "画笔"], ["line", "直线"], ["arrow", "箭头"],
-    ["rect", "矩形"], ["ellipse", "椭圆"], ["text", "文字"], ["eraser", "橡皮擦"],
+    ["rect", "矩形"], ["ellipse", "椭圆"], ["pen", "钢笔选取"],
+    ["text", "文字"], ["eraser", "橡皮擦"],
   ];
 
   function ensureDom() {
@@ -33,7 +34,7 @@
           <button class="ann-t ann-done" id="annDone">完成标注</button>
         </div>
         <canvas id="annCanvas"></canvas>
-        <div class="ann-hint">画笔按住拖 · 直线/箭头/矩形/椭圆 拖出 · 文字点一下再输入 · 橡皮擦点掉标记</div>
+        <div class="ann-hint">画笔按住拖 · 直线/箭头/矩形/椭圆 拖出 · 钢笔选取逐点点击、<b>双击或点回起点闭合</b>成选区 · 文字点一下再输入 · <b>配景图章可拖动，拖右下角缩放</b> · 橡皮擦点掉标记</div>
       </div>`;
     document.body.appendChild(wrap);
     canvas = document.getElementById("annCanvas");
@@ -43,20 +44,32 @@
       b.addEventListener("click", () => setTool(b.dataset.tool)));
     document.getElementById("annColor").addEventListener("input", e => A.color = e.target.value);
     document.getElementById("annSize").addEventListener("input", e => A.size = +e.target.value);
-    document.getElementById("annUndo").addEventListener("click", () => { A.ops.pop(); render(); });
-    document.getElementById("annClear").addEventListener("click", () => { A.ops = []; render(); });
+    document.getElementById("annUndo").addEventListener("click", undo);
+    document.getElementById("annClear").addEventListener("click", () => { A.ops = []; A.drawing = null; render(); });
     document.getElementById("annCancel").addEventListener("click", close);
     document.getElementById("annDone").addEventListener("click", done);
 
     canvas.addEventListener("pointerdown", onDown);
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerup", onUp);
+    canvas.addEventListener("dblclick", onDblClick);
+  }
+
+  function undo() {
+    if (A.drawing && A.drawing.tool === "pen") {   // 正在点钢笔选区：退一个锚点
+      A.drawing.pts.pop();
+      if (!A.drawing.pts.length) A.drawing = null;
+    } else A.ops.pop();
+    render();
   }
 
   function setTool(t) {
+    // 切走时若有没闭合的钢笔选区，丢弃挂起的路径
+    if (t !== "pen" && A.drawing && A.drawing.tool === "pen") A.drawing = null;
     A.tool = t;
     document.querySelectorAll("#annStudio .ann-t[data-tool]").forEach(b =>
       b.classList.toggle("on", b.dataset.tool === t));
+    render();
   }
 
   function pos(e) {
@@ -68,26 +81,55 @@
   function onDown(e) {
     e.preventDefault(); canvas.setPointerCapture(e.pointerId);
     const [x, y] = pos(e);
+    const sh = _hitStamp(x, y);            // 图章优先：命中已贴配景就拖动/缩放（跨工具，橡皮擦除外）
+    if (sh && A.tool !== "eraser") { A.stampAct = sh; return; }
     if (A.tool === "text") {
       const txt = prompt("输入文字：");
       if (txt) { A.ops.push({ tool: "text", color: A.color, size: A.size * 3, x, y, text: txt }); render(); }
       return;
     }
     if (A.tool === "eraser") { eraseAt(x, y); A.drawing = { tool: "eraser" }; return; }
+    if (A.tool === "pen") {                       // 钢笔选取：逐点点击、双击/点回起点闭合成选区
+      if (A.drawing && A.drawing.tool === "pen") {
+        const first = A.drawing.pts[0], R = Math.max(8, canvas.width / 130);
+        if (A.drawing.pts.length >= 3 && Math.hypot(x - first[0], y - first[1]) <= R) closePen();
+        else { A.drawing.pts.push([x, y]); render(); }
+      } else {
+        A.drawing = { tool: "pen", color: A.color, size: A.size, pts: [[x, y]], closed: false };
+        render();
+      }
+      return;
+    }
     if (A.tool === "brush") A.drawing = { tool: "brush", color: A.color, size: A.size, pts: [[x, y]] };
     else A.drawing = { tool: A.tool, color: A.color, size: A.size, x0: x, y0: y, x1: x, y1: y };
     render();
   }
   function onMove(e) {
-    if (!A.drawing) return;
     const [x, y] = pos(e);
+    if (A.stampAct) {                       // 拖动/缩放图章
+      const s = A.stampAct;
+      if (s.mode === "move") { s.op.x = x - s.dx; s.op.y = y - s.dy; }
+      else { s.op.w = Math.max(20, x - s.op.x); s.op.h = Math.max(20, y - s.op.y); }
+      render(); return;
+    }
+    if (!A.drawing) return;
     if (A.drawing.tool === "eraser") { eraseAt(x, y); return; }
+    if (A.drawing.tool === "pen") { A.drawing.hover = [x, y]; render(); return; }
     if (A.drawing.tool === "brush") A.drawing.pts.push([x, y]);
     else { A.drawing.x1 = x; A.drawing.y1 = y; }
     render();
   }
+  function onDblClick() {
+    if (A.drawing && A.drawing.tool === "pen" && A.drawing.pts.length >= 3) closePen();
+  }
+  function closePen() {
+    A.drawing.closed = true; delete A.drawing.hover;
+    A.ops.push(A.drawing); A.drawing = null; render();
+  }
   function onUp() {
+    if (A.stampAct) { A.stampAct = null; return; }   // 结束图章拖动/缩放
     if (!A.drawing) return;
+    if (A.drawing.tool === "pen") return;   // 钢笔选区由点击/双击控制，pointerup 不结束
     if (A.drawing.tool !== "eraser") A.ops.push(A.drawing);
     A.drawing = null; render();
   }
@@ -99,6 +141,7 @@
     }
   }
   function hit(op, x, y, R) {
+    if (op.tool === "stamp") return x >= op.x - R && x <= op.x + op.w + R && y >= op.y - R && y <= op.y + op.h + R;
     if (op.tool === "text") return Math.abs(x - op.x) < op.size * op.text.length && Math.abs(y - op.y) < op.size;
     if (op.pts) return op.pts.some(p => Math.hypot(x - p[0], y - p[1]) <= R);
     const xs = [op.x0, op.x1], ys = [op.y0, op.y1];
@@ -106,7 +149,20 @@
            y >= Math.min(...ys) - R && y <= Math.max(...ys) + R;
   }
 
-  function drawOp(c, op, k) {
+  function drawOp(c, op, k, decorate) {
+    if (op.tool === "stamp") {                 // 配景图章：直接把素材图画上去
+      if (op.img && op.img.complete) c.drawImage(op.img, op.x * k, op.y * k, op.w * k, op.h * k);
+      if (decorate) {                          // 编辑时才画选框+缩放手柄；压平输出(done)不画
+        c.save();
+        c.strokeStyle = "#3a7bd5"; c.setLineDash([5, 4]); c.lineWidth = 1.5;
+        c.strokeRect(op.x * k, op.y * k, op.w * k, op.h * k);
+        c.setLineDash([]);
+        const hs = 9; c.fillStyle = "#3a7bd5";
+        c.fillRect((op.x + op.w) * k - hs / 2, (op.y + op.h) * k - hs / 2, hs, hs);
+        c.restore();
+      }
+      return;
+    }
     c.strokeStyle = op.color; c.fillStyle = op.color;
     c.lineWidth = op.size * k; c.lineCap = c.lineJoin = "round";
     if (op.tool === "brush") {
@@ -120,6 +176,20 @@
       c.beginPath();
       c.ellipse((op.x0 + op.x1) / 2 * k, (op.y0 + op.y1) / 2 * k,
         Math.abs(op.x1 - op.x0) / 2 * k, Math.abs(op.y1 - op.y0) / 2 * k, 0, 0, 7); c.stroke();
+    } else if (op.tool === "pen") {
+      c.lineWidth = Math.max(2, op.size * k / 2);
+      c.beginPath();
+      op.pts.forEach((p, i) => i ? c.lineTo(p[0] * k, p[1] * k) : c.moveTo(p[0] * k, p[1] * k));
+      if (op.closed) {                       // 闭合选区：半透明填充 + 描边
+        c.closePath();
+        c.save(); c.globalAlpha = 0.28; c.fill(); c.restore();
+        c.stroke();
+      } else {                               // 未闭合：连到光标的橡皮筋 + 各锚点小圆
+        if (op.hover) c.lineTo(op.hover[0] * k, op.hover[1] * k);
+        c.stroke();
+        const R = Math.max(3, canvas.width / 260);
+        op.pts.forEach(p => { c.beginPath(); c.arc(p[0] * k, p[1] * k, R, 0, 7); c.fill(); });
+      }
     } else if (op.tool === "text") {
       c.font = `bold ${op.size * k}px "Microsoft YaHei", sans-serif`;
       c.textBaseline = "top"; c.fillText(op.text, op.x * k, op.y * k);
@@ -135,8 +205,41 @@
   }
 
   function render() {
+    if (!A.img) return;   // 图未加载完（如初始 setTool）时不画，避免 drawImage(null) 报错
     ctx.drawImage(A.img, 0, 0, canvas.width, canvas.height);
-    [...A.ops, A.drawing].filter(Boolean).forEach(op => drawOp(ctx, op, 1));
+    [...A.ops, A.drawing].filter(Boolean).forEach(op => drawOp(ctx, op, 1, true));
+  }
+
+  // 配景图章命中检测：右下角手柄→缩放，图章内部→移动。跨工具生效（贴完仍可随时拖）
+  function _hitStamp(x, y) {
+    const HS = Math.max(10, canvas.width / 90);
+    for (let i = A.ops.length - 1; i >= 0; i--) {
+      const op = A.ops[i];
+      if (op.tool !== "stamp") continue;
+      if (Math.abs(x - (op.x + op.w)) <= HS && Math.abs(y - (op.y + op.h)) <= HS)
+        return { op, mode: "resize" };
+      if (x >= op.x && x <= op.x + op.w && y >= op.y && y <= op.y + op.h)
+        return { op, mode: "move", dx: x - op.x, dy: y - op.y };
+    }
+    return null;
+  }
+
+  // 从素材库点「贴到标注」后，把该配景图作为可拖拽/缩放的图章贴到画布
+  function _consumePendingStamp() {
+    const p = window._pendingStamp;
+    if (!p || !p.url) return;
+    window._pendingStamp = null;
+    const st = new Image();
+    st.onload = () => {
+      const ar = (st.naturalWidth / st.naturalHeight) || 1;
+      let w = canvas.width * 0.35, h = w / ar;
+      if (h > canvas.height * 0.6) { h = canvas.height * 0.6; w = h * ar; }
+      A.ops.push({ tool: "stamp", img: st,
+                   x: (canvas.width - w) / 2, y: (canvas.height - h) / 2, w, h });
+      setTool("brush");   // 贴好后切回普通工具避免误画；图章仍可直接拖动/缩放
+      render();
+    };
+    st.src = p.url;       // 同源 /asset_images/，画布不会被污染，done() 仍可导出
   }
 
   function openAnnotate(src, onDone) {
@@ -151,6 +254,7 @@
       canvas.width = Math.round(img.width * sc);
       canvas.height = Math.round(img.height * sc);
       render();
+      _consumePendingStamp();   // 若从素材库点了"贴到标注"，把配景作为图章贴上
       document.getElementById("annStudio").style.display = "flex";
     };
     img.src = src;

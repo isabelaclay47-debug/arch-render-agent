@@ -243,6 +243,30 @@ def add_item(i, image, kind, analysis, verdict, prompt):
                            "analysis": analysis, "verdict": verdict, "prompt": prompt})
 
 
+def _persist_item_prompt(sess_dir, image, prompt, analysis="", verdict="", kind="auto"):
+    """把每张成图对应的提示词/篡改分析/结论持久化进 meta.json 的 items 映射，
+    供「历史成图」逐图展示各自的详细提示词（会话结束后也不丢）。对应需求⑩。"""
+    mp = os.path.join(sess_dir, "meta.json")
+    meta = {}
+    if os.path.isfile(mp):
+        try:
+            with open(mp, encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            meta = {}
+    items = meta.get("items")
+    if not isinstance(items, dict):
+        items = {}
+    items[image] = {"prompt": prompt or "", "analysis": analysis or "",
+                    "verdict": verdict or "", "kind": kind}
+    meta["items"] = items
+    try:
+        with open(mp, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 def _update_meta(sess_dir: str, **fields):
     """把若干字段并进会话 meta.json（历史列表要用：建筑师初始命令 + 最后一版提示词）。
     只写入非空字段，容忍文件缺失/损坏。对应需求②。"""
@@ -431,6 +455,8 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                      parsed["analysis"] or "（未解析出分析内容）",
                      parsed["verdict"], prompt)
             _update_meta(sess_dir, last_prompt_zh=prompt_zh, last_prompt_en=prompt)
+            _persist_item_prompt(sess_dir, f"iter_{i:02d}.png", prompt,
+                                 parsed["analysis"], parsed["verdict"], "auto")
             log(f"第 {i} 轮检查完成（下一轮将{mode_label}）：{(parsed['verdict'] or '无结论')[:80]}")
 
         def edit_round(edit):
@@ -439,14 +465,57 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             src = os.path.join(sess_dir, edit["source_image"])
             marked = edit["marked_path"]
             instruction = edit["instruction"]
+
+            # 理解确认关卡：先让导演看[原图, 标记图]用中文复述对这次修改的理解，建筑师确认无误
+            # 再真正生图（复用主流程确认关卡的 UI 与事件，避免误改浪费额度）。
+            while True:
+                with _lock:
+                    S["state"] = "running"
+                log("局部修改：先让导演复述对修改的理解，等你确认…")
+                u_reply = client.send(client.director_page,
+                                      pe.regional_understanding_prompt(instruction),
+                                      image_paths=[src, marked])
+                understanding = pe.parse_director_reply(u_reply)["understanding"] or u_reply.strip()
+                with _lock:
+                    S["state"] = "waiting_confirm"
+                    S["understanding"] = understanding
+                    S["prompt_zh"] = instruction
+                _confirm_event.clear()
+                _confirm_event.wait()
+                _confirm_event.clear()
+                if _finish_now.is_set():
+                    with _lock:
+                        S["state"] = "running"
+                        S["understanding"] = ""
+                        S["prompt_zh"] = ""
+                    return   # 提前结束：放弃这次局部修改，交回外层正常收尾输出最新图
+                edited = _confirm["edited_zh"].strip()
+                if edited:
+                    instruction = edited
+                with _lock:
+                    S["understanding"] = ""
+                    S["prompt_zh"] = ""
+                if _confirm["action"] == "confirm":
+                    break
+                # action == adjust：用建筑师改过的指令再让导演复述一遍理解
+
+            with _lock:
+                S["state"] = "editing"
             log(f"第 {i} 轮（局部修改）：只修改标记区域——{instruction[:50]}…")
             # 发给生图的一律英文：先把中文修改指令翻成英文（纯文本，不耗生图额度）
             tr = client.send(client.director_page,
                              pe.translate_instruction_prompt(instruction))
             instruction_en = pe.parse_director_reply(tr)["prompt_en"] or instruction
             client.new_generation_chat()
-            client.send(client.gen_page, pe.regional_edit_message(instruction_en),
-                        image_paths=[src, marked], expect_image=True)
+            material_path = edit.get("material_path") or ""
+            if material_path and os.path.isfile(material_path):
+                # 材质换面：把材质样板作为第 3 张图，只把圈选区换成该材质
+                client.send(client.gen_page,
+                            pe.regional_edit_with_material_message(instruction_en),
+                            image_paths=[src, marked, material_path], expect_image=True)
+            else:
+                client.send(client.gen_page, pe.regional_edit_message(instruction_en),
+                            image_paths=[src, marked], expect_image=True)
             img_path = os.path.join(sess_dir, f"iter_{i:02d}.png")
             if not client.download_last_image(client.gen_page, img_path):
                 raise GenStalledError(f"局部修改第 {i} 轮似乎出图了但没抓到图片（页面可能假死）。")
@@ -458,6 +527,9 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             add_item(i, f"iter_{i:02d}.png", "edit",
                      parsed["analysis"] or "（未解析出分析内容）",
                      parsed["verdict"], f"（局部修改）{instruction}")
+            _persist_item_prompt(sess_dir, f"iter_{i:02d}.png",
+                                 f"（局部修改）{instruction}",
+                                 parsed["analysis"], parsed["verdict"], "edit")
             # 建筑师批准的修改结果成为新的忠实性参照与后续底图；下一轮从它重画一次校准
             fidelity_base = img_path
             last_gen = img_path
@@ -466,18 +538,29 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             log(f"局部修改检查完成：{(parsed['verdict'] or '无结论')[:80]}")
 
         def run_step_with_recovery(step_fn) -> bool:
-            """执行一轮生成；若生图多次自愈仍失败(GenStalledError)，停在 'stalled'
-            可恢复状态等用户点「刷新/重试本轮」或「提前结束」，绝不让会话结束（需求③/⑦）。
+            """执行一轮生成；若生图多次自愈仍失败(GenStalledError)：
+            先「自动干预」——自动刷新重试若干次（判断是 ChatGPT 网页假死还是真没出图，
+            期间界面仍显示运行中、可随时点结束）；自动重试用完仍失败，才停在 'stalled'
+            可恢复状态等用户手动「重试本轮」或「提前结束」，绝不让会话结束（需求③/⑦）。
             返回 True 表示用户选择结束任务。"""
+            auto_retries_left = 2   # 卡死后自动再刷新重试的次数上限，用完才停下等人工
             while True:
                 try:
                     step_fn()
                     return False
                 except GenStalledError as e:
+                    if auto_retries_left > 0:
+                        auto_retries_left -= 1
+                        log(f"⚠ 生图卡住：{e} —— 自动刷新重试一轮"
+                            f"（剩余自动重试 {auto_retries_left} 次）…")
+                        if _finish_now.wait(timeout=2.0):  # 重试前留个可取消的小停顿
+                            return True
+                        _nudge.clear()
+                        continue
                     with _lock:
                         S["state"] = "stalled"
                         S["error"] = str(e)
-                    log(f"⚠ 已暂停但未结束：{e}")
+                    log(f"⚠ 自动重试用尽仍未出图，暂停等待手动重试或结束：{e}")
                     _nudge.clear()
                     while not _nudge.is_set() and not _finish_now.is_set():
                         _nudge.wait(timeout=1.0)
@@ -713,11 +796,20 @@ def api_regional_edit():
     with open(marked_path, "wb") as f:
         f.write(base64.b64decode(data_url.split(",", 1)[1]))
 
+    # 材质换面（素材·材质）：可选带一张材质样板图，只把圈选区换成该材质
+    material_path = ""
+    material = _safe_name(data.get("material"))
+    if material:
+        mp = os.path.join(ASSETS_DIR, material)
+        if os.path.isfile(mp):
+            material_path = mp
+
     _feedback["type"] = "edit"
     _feedback["text"] = ""
     _feedback["edit"] = {"source_image": os.path.basename(source_image),
                          "marked_path": marked_path,
-                         "instruction": instruction}
+                         "instruction": instruction,
+                         "material_path": material_path}
     _feedback_event.set()
     return jsonify({"ok": True})
 
@@ -1074,7 +1166,8 @@ def _install_ollama_windows():
 def _install_ollama_linux():
     _vlog("运行官方安装脚本：curl -fsSL https://ollama.com/install.sh | sh …")
     p = subprocess.run("curl -fsSL https://ollama.com/install.sh | sh",
-                       shell=True, timeout=900, capture_output=True, text=True)
+                       shell=True, timeout=900, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     if p.returncode != 0:
         raise RuntimeError(f"安装脚本失败：{(p.stderr or '')[-200:]}")
 
@@ -1099,8 +1192,11 @@ def _wait_ollama_up(timeout: int):
 
 
 def _pull_model(exe: str, model: str):
+    # 必须显式 UTF-8 解码：ollama 进度输出是 UTF-8，Windows 上 text=True 默认按 GBK 解码
+    # 会在遇到非 GBK 字节时崩（'gbk' codec can't decode byte 0x8b）；errors=replace 兜底。
     proc = subprocess.Popen([exe, "pull", model], stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+                            stderr=subprocess.STDOUT, text=True, bufsize=1,
+                            encoding="utf-8", errors="replace")
     last = ""
     for line in proc.stdout:
         line = (line or "").strip()
@@ -1169,7 +1265,7 @@ def _git(args: list, timeout: int = 60):
     """在 APP_DIR 里跑一条 git（固定参数，无 shell 注入），返回 (returncode, 输出)。"""
     try:
         p = subprocess.run(["git", *args], cwd=APP_DIR, capture_output=True,
-                           text=True, timeout=timeout)
+                           text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return p.returncode, (p.stdout + p.stderr).strip()
     except FileNotFoundError:
         return 127, "本机没装 git，无法在线更新。"
@@ -1184,13 +1280,31 @@ def _busy_rendering() -> bool:
                           "waiting_clarification", "waiting_feedback", "editing", "stalled")
 
 
+def _remote_has_branch(branch: str) -> bool:
+    """远端是否存在该分支（判断内测分支被合并删除后要不要回退 main）。"""
+    code, out = _git(["ls-remote", "--heads", "origin", branch], timeout=30)
+    return code == 0 and bool(out.strip())
+
+
+def _update_branch():
+    """选定在线更新要追踪的分支：当前分支若在远端还存在就用它；否则（内测分支合并后
+    被删）回退 main，避免老测试机点更新时 couldn't find remote ref 报错。
+    返回 (branch, code, err)：code!=0 表示连当前分支都读不出（多半没 .git）。"""
+    code, cur = _git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=10)
+    if code != 0:
+        return "", code, cur
+    cur = cur.strip() or "main"
+    if cur != "main" and not _remote_has_branch(cur):
+        return "main", 0, ""
+    return cur, 0, ""
+
+
 @app.route("/api/update_check")
 def api_update_check():
     """查远端有没有新版：git fetch 后比对当前分支与 origin/当前分支。"""
-    code, branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=10)
+    branch, code, err = _update_branch()
     if code != 0:
-        return jsonify({"ok": False, "msg": f"读取分支失败：{branch}"}), 200
-    branch = branch.strip() or "main"
+        return jsonify({"ok": False, "msg": f"读取分支失败：{err}"}), 200
     code, out = _git(["fetch", "--quiet", "origin", branch], timeout=60)
     if code != 0:
         return jsonify({"ok": False, "msg": f"检查更新失败（连网了吗？）：{out}"}), 200
@@ -1233,8 +1347,8 @@ def api_update_apply():
     （避免重启到缺依赖、跑不起来的新代码），改为提示用户手动安装。"""
     if _busy_rendering():
         return jsonify({"ok": False, "msg": "有渲染任务在进行，请先结束/完成再更新"}), 400
-    code, branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=10)
-    branch = branch.strip() or "main"
+    branch, _c, _e = _update_branch()
+    branch = branch or "main"
     req_path = os.path.join(APP_DIR, "requirements.txt")
     before_req = _read_bytes(req_path)
     code, out = _git(["pull", "--ff-only", "origin", branch], timeout=120)
@@ -1249,7 +1363,8 @@ def api_update_apply():
         log("依赖有变化，正在自动安装新依赖（pip install -r requirements.txt）…")
         try:
             p = subprocess.run([sys.executable, "-m", "pip", "install", "-r", req_path],
-                               cwd=APP_DIR, capture_output=True, text=True, timeout=600)
+                               cwd=APP_DIR, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=600)
             deps_installed = p.returncode == 0
             pip_tail = (p.stdout + p.stderr).strip()[-600:]
         except Exception as e:
@@ -1328,6 +1443,8 @@ def api_history():
                 "images": imgs,
                 "favorites": [im for im in imgs if (name, im) in favs],
                 "count": len(imgs),
+                # 需求⑩：每张成图各自的详细提示词/分析/结论（会话结束后仍可查）
+                "item_meta": meta["items"] if isinstance(meta.get("items"), dict) else {},
             })
     return jsonify({"sessions": sessions[:40]})  # 最近 40 个会话，避免列表过长
 
@@ -1352,6 +1469,9 @@ def api_favorite():
     on = bool(data.get("on", True))
     if not sess or not img:
         return jsonify({"ok": False, "msg": "缺少 session/image"}), 400
+    # 收藏前校验图确实存在，避免把不存在的条目写进收藏文件攒垃圾
+    if on and not os.path.isfile(os.path.join(WORKSPACE, sess, img)):
+        return jsonify({"ok": False, "msg": "要收藏的图不存在"}), 404
     favs = _load_favorites()
     favs = [fv for fv in favs if not (fv.get("session") == sess and fv.get("image") == img)]
     if on:
@@ -1544,6 +1664,110 @@ def api_handoff_clear():
         except OSError:
             pass
     return jsonify({"ok": True})
+
+
+# ======================================================================
+#  素材库：导入本地图片长期存起来，供 ①当意向图 ②配景贴图 ③材质换面（需求⑧素材）
+# ======================================================================
+ASSETS_DIR = os.path.join(WORKSPACE, "_assets")
+ASSET_CATEGORIES = ("意向", "配景", "材质")
+
+
+def _asset_manifest() -> list:
+    try:
+        with open(os.path.join(ASSETS_DIR, "manifest.json"), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _save_asset_manifest(items: list):
+    os.makedirs(ASSETS_DIR, exist_ok=True)
+    with open(os.path.join(ASSETS_DIR, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False)
+
+
+def _save_asset_image(file_storage, dest_noext: str) -> str:
+    """存素材图：配景等带透明通道的 PNG **保留透明**（否则贴图会出现黑底），其余压成 JPEG。长边≤2000。"""
+    img = Image.open(file_storage.stream)
+    img.thumbnail((2000, 2000), Image.LANCZOS)
+    has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+    if has_alpha:
+        out = dest_noext + ".png"
+        img.convert("RGBA").save(out, "PNG")
+    else:
+        out = dest_noext + ".jpg"
+        img.convert("RGB").save(out, "JPEG", quality=88)
+    return out
+
+
+@app.route("/api/assets")
+def api_assets():
+    """素材列表，可按 ?category= 过滤。最新在前，每项给缩略图 URL（已过滤掉丢失文件）。"""
+    cat = request.args.get("category", "")
+    out = []
+    for it in reversed(_asset_manifest()):
+        if cat and it.get("category") != cat:
+            continue
+        f = it.get("file", "")
+        if f and os.path.isfile(os.path.join(ASSETS_DIR, f)):
+            out.append({**it, "url": f"/asset_images/{f}"})
+    return jsonify({"categories": list(ASSET_CATEGORIES), "assets": out})
+
+
+@app.route("/api/asset_import", methods=["POST"])
+def api_asset_import():
+    """导入一张/多张图片存进素材库。form: category(意向/配景/材质) + images(可多张)。"""
+    category = request.form.get("category", "")
+    if category not in ASSET_CATEGORIES:
+        return jsonify({"ok": False, "msg": "分类必须是 意向/配景/材质"}), 400
+    files = [f for f in request.files.getlist("images") if f and f.filename]
+    if not files:
+        return jsonify({"ok": False, "msg": "没有可导入的图片"}), 400
+    os.makedirs(ASSETS_DIR, exist_ok=True)
+    manifest = _asset_manifest()
+    added = 0
+    for f in files:
+        aid = datetime.now().strftime("%Y%m%d%H%M%S_") + os.urandom(3).hex()
+        try:
+            path = _save_asset_image(f, os.path.join(ASSETS_DIR, aid))
+        except Exception:
+            continue  # 跳过读不了的单张，不影响其余
+        manifest.append({"id": aid, "category": category,
+                         "name": _safe_name(f.filename) or "素材",
+                         "file": os.path.basename(path),
+                         "when": datetime.now().strftime("%Y-%m-%d %H:%M")})
+        added += 1
+    _save_asset_manifest(manifest)
+    if not added:
+        return jsonify({"ok": False, "msg": "导入失败：图片都无法读取"}), 400
+    return jsonify({"ok": True, "added": added})
+
+
+@app.route("/api/asset_delete", methods=["POST"])
+def api_asset_delete():
+    """从素材库删除一项（真删——素材是可反复导入的资源，不进回收站）。入参 {id}。"""
+    aid = _safe_name((request.get_json(force=True, silent=True) or {}).get("id"))
+    if not aid:
+        return jsonify({"ok": False, "msg": "无效的素材 id"}), 400
+    manifest = _asset_manifest()
+    entry = next((x for x in manifest if x.get("id") == aid), None)
+    if not entry:
+        return jsonify({"ok": False, "msg": "素材不存在"}), 404
+    try:
+        fp = os.path.join(ASSETS_DIR, entry.get("file", ""))
+        if entry.get("file") and os.path.isfile(fp):
+            os.remove(fp)
+    except OSError:
+        pass
+    _save_asset_manifest([x for x in manifest if x.get("id") != aid])
+    return jsonify({"ok": True})
+
+
+@app.route("/asset_images/<name>")
+def asset_images(name):
+    return send_from_directory(ASSETS_DIR, os.path.basename(name))
 
 
 @app.route("/images/<sess>/<name>")
