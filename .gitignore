@@ -27,3 +27,6 @@ static/vendor/
 .omc/
 .vscode/
 .idea/
+
+# Playwright CLI 测试临时产物
+.playwright-cli/
