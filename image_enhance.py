@@ -82,10 +82,17 @@ def _sr_x4_tiled(bgr, tile=224, overlap=24, log=print):
             y2, x2 = min(y + tile, H), min(x + tile, W)
             patch = bgr[y1:y2, x1:x2]
             ph, pw = patch.shape[:2]
-            rgb = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            # Swin2SR 要求输入高宽是窗口尺寸(8)的倍数，否则内部 reshape 崩
+            # （Input shape ... cannot be reshaped）。反射填充到 8 的倍数，推理后裁回真实 ×4。
+            WS = 8
+            padh, padw = (-ph) % WS, (-pw) % WS
+            patch_in = cv2.copyMakeBorder(patch, 0, padh, 0, padw, cv2.BORDER_REFLECT) \
+                if (padh or padw) else patch
+            rgb = cv2.cvtColor(patch_in, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
             inp = np.transpose(rgb, (2, 0, 1))[None]
             res = sess.run(None, {"pixel_values": inp})[0][0]
             res = np.clip(res, 0, 1).transpose(1, 2, 0)[:, :, ::-1]  # →BGR, ×4
+            res = res[:ph * scale, :pw * scale]                      # 裁掉填充部分的 ×4
             # 余弦羽化窗
             ov = overlap * scale
             wy = np.ones((ph * scale, 1), np.float32)
