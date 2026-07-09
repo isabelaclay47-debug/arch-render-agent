@@ -30,11 +30,17 @@
           <label class="ann-ctl">粗细 <input type="range" id="annSize" min="2" max="40" value="6"></label>
           <button class="ann-t" id="annUndo">撤销</button>
           <button class="ann-t" id="annClear">清空</button>
+          <span class="ann-ctl">缩放
+            <button class="ann-t" id="annZoomOut" title="缩小">−</button>
+            <span id="annZoomLabel" style="min-width:44px;display:inline-block;text-align:center">100%</span>
+            <button class="ann-t" id="annZoomIn" title="放大（也可按住 Ctrl 滚轮）">＋</button>
+            <button class="ann-t" id="annZoomFit" title="适应窗口">适应</button>
+          </span>
           <span style="flex:1"></span>
           <button class="ann-t ann-cancel" id="annCancel">取消</button>
           <button class="ann-t ann-done" id="annDone">完成标注</button>
         </div>
-        <canvas id="annCanvas"></canvas>
+        <div class="ann-canvas-wrap"><canvas id="annCanvas"></canvas></div>
         <div class="ann-hint"><b>选择</b>：点任意标注→拖动移位、拖右下角缩放、<b>双击文字改内容</b> · 画笔按住拖 · 直线/箭头/矩形/椭圆 拖出 · 钢笔逐点点击、<b>双击闭合</b> · 文字点一下再输入 · 橡皮擦点掉标记</div>
       </div>`;
     document.body.appendChild(wrap);
@@ -49,6 +55,15 @@
     document.getElementById("annClear").addEventListener("click", () => { A.ops = []; A.drawing = null; A.sel = null; A.act = null; render(); });
     document.getElementById("annCancel").addEventListener("click", close);
     document.getElementById("annDone").addEventListener("click", done);
+    document.getElementById("annZoomIn").addEventListener("click", () => setZoom(A.zoom * 1.25));
+    document.getElementById("annZoomOut").addEventListener("click", () => setZoom(A.zoom / 1.25));
+    document.getElementById("annZoomFit").addEventListener("click", () => setZoom(1));
+    // 按住 Ctrl 滚轮 = 缩放（普通滚轮留给容器滚动，方便放大后浏览各处）
+    canvas.parentElement.addEventListener("wheel", e => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      setZoom(A.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+    }, { passive: false });
 
     canvas.addEventListener("pointerdown", onDown);
     canvas.addEventListener("pointermove", onMove);
@@ -325,6 +340,20 @@
     st.src = p.url;       // 同源 /asset_images/，画布不会被污染，done() 仍可导出
   }
 
+  // 缩放：只改画布 CSS 显示尺寸（位图坐标不变，pos() 靠 getBoundingClientRect 自适应，
+  // 标注坐标数学完全不用动）；容器可滚动，放大后能标注细部。
+  function applyZoom() {
+    if (!A.fitW) return;
+    canvas.style.width = Math.round(A.fitW * A.zoom) + "px";
+    canvas.style.height = Math.round(A.fitH * A.zoom) + "px";
+    const lbl = document.getElementById("annZoomLabel");
+    if (lbl) lbl.textContent = Math.round(A.zoom * 100) + "%";
+  }
+  function setZoom(z) {
+    A.zoom = Math.min(6, Math.max(1, z));   // 1×(适应窗口)~6×
+    applyZoom();
+  }
+
   function openAnnotate(src, onDone) {
     ensureDom();
     A.ops = []; A.drawing = null; A.sel = null; A.act = null; A.onDone = onDone;
@@ -336,6 +365,11 @@
       A.scale = sc;
       canvas.width = Math.round(img.width * sc);
       canvas.height = Math.round(img.height * sc);
+      // 适应窗口的显示尺寸（zoom=1 即铺满可视区、保持比例）
+      const availW = window.innerWidth * 0.88, availH = window.innerHeight * 0.60;
+      const f = Math.min(availW / canvas.width, availH / canvas.height);
+      A.fitW = canvas.width * f; A.fitH = canvas.height * f;
+      A.zoom = 1; applyZoom();
       render();
       _consumePendingStamp();   // 若从素材库点了"贴到标注"，把配景作为图章贴上
       document.getElementById("annStudio").style.display = "flex";

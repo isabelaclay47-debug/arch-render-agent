@@ -248,8 +248,11 @@
   .ann-t.on { background: var(--wine); border-color: var(--wine); color: var(--cream); font-weight: 600; }
   .ann-ctl { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink); }
   .ann-done { background: var(--sage); color: #fff; border-color: var(--sage); font-weight: 600; }
+  /* 标注画布放大：外层滚动容器管可视区约束，画布自身由 JS 按缩放设 CSS 尺寸、可超出容器滚动查看 */
+  .ann-canvas-wrap { max-width: 90vw; max-height: 66vh; overflow: auto;
+                     border: 1px solid var(--sand); border-radius: 4px; background: var(--paper2); }
   #annCanvas { display: block; border-radius: 2px; cursor: crosshair; touch-action: none;
-               max-width: 90vw; max-height: 66vh; border: 1px solid var(--sand); background: var(--paper2); }
+               background: var(--paper2); }
   .ann-hint { color: var(--taupe); font-size: 12px; margin-top: 10px; }
 
   /* 历史成图（痛点三：挑一张当新底图） */
