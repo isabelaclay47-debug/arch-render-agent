@@ -94,6 +94,52 @@ def set_image_engine(name: str) -> str:
     return name
 
 
+# 画质档位（需求：本地 AI 超分到 1K/2K/4K/8K；gemini 引擎顺带去水印）。默认 1k=原生不放大。
+_QUALITIES = ("1k", "2k", "4k", "8k")
+_quality = os.environ.get("ARA_QUALITY", "1k").strip().lower()
+if _quality not in _QUALITIES:
+    _quality = "1k"
+
+
+def get_quality() -> str:
+    with _lock:
+        return _quality
+
+
+def set_quality(q: str) -> str:
+    global _quality
+    q = str(q or "").strip().lower()
+    if q not in _QUALITIES:
+        raise ValueError(f"未知画质：{q}（可选 {'/'.join(_QUALITIES)}）")
+    with _lock:
+        _quality = q
+    return q
+
+
+def _maybe_enhance(path: str):
+    """对刚落盘的成图按当前画质档位做本地超分（gemini 引擎时顺带去水印）。
+    1k 原生 + 非 gemini 时零开销直接返回；缺依赖/模型时优雅跳过，绝不影响出图。
+    惰性 import image_enhance——缺 onnxruntime/opencv 也不能让整个 app 起不来。"""
+    dewm = (get_image_engine() == "gemini")
+    q = get_quality()
+    if q == "1k" and not dewm:
+        return
+    try:
+        import image_enhance
+    except Exception as e:
+        log(f"⚠ 画质增强不可用（缺依赖：{e}），已跳过，出图不受影响。")
+        return
+    try:
+        log(f"本地画质增强中（{q.upper()}{'＋去水印' if dewm else ''}）…高档位需数分钟，请稍候。")
+        r = image_enhance.enhance_file(path, quality=q, dewatermark_wm=dewm, log=log)
+        if r.get("upscaled_to"):
+            log(f"画质增强完成 → {r['upscaled_to']}")
+        for s in r.get("skipped", []):
+            log(f"（画质增强跳过：{s}）")
+    except Exception as e:
+        log(f"⚠ 画质增强出错，已保留原图：{e}")
+
+
 def log(msg: str):
     line = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
     with _lock:
@@ -683,6 +729,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
         out = os.path.join(desktop_path(),
                            f"渲染结果_{datetime.now().strftime('%m%d_%H%M')}.png")
         shutil.copyfile(last_img, out)
+        _maybe_enhance(out)   # 只对最终交付图按画质档位超分/去水印；过程图保持原尺寸不受影响
         with _lock:
             S["state"] = "done"
             S["final_path"] = out
@@ -783,6 +830,7 @@ def api_status():
     with _lock:
         data = dict(S)
         data["image_engine"] = _image_engine   # 当前生图引擎，供前端切换开关回显
+        data["quality"] = _quality             # 当前画质档位，供前端下拉回显
     return jsonify(data)
 
 
@@ -797,6 +845,16 @@ def api_set_engine():
     except ValueError as e:
         return jsonify({"ok": False, "msg": str(e)}), 400
     return jsonify({"ok": True, "engine": name})
+
+
+@app.route("/api/set_quality", methods=["POST"])
+def api_set_quality():
+    """切换出图画质档位（1k/2k/4k/8k）。画质是逐图本地后处理，随时可改、下一张成图生效。"""
+    try:
+        q = set_quality((request.get_json(silent=True) or {}).get("quality"))
+    except ValueError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 400
+    return jsonify({"ok": True, "quality": q})
 
 
 @app.route("/api/feedback", methods=["POST"])

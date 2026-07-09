@@ -347,6 +347,16 @@
         <option value="gemini">Gemini · nano-banana</option>
       </select>
     </label>
+    <label class="btn-ghost" style="display:flex;align-items:center;gap:6px;cursor:pointer"
+           title="最终输出图的画质：本地 AI 超分（Swin2SR），离线免账号。1K=原生不放大；2K/4K/8K 会在出图后本地放大补细节（高档位需数分钟）。只增强最终交付图，不影响过程与生图速度。">
+      画质
+      <select id="qualitySel" onchange="changeQuality(this.value)" style="font:inherit;padding:2px 4px">
+        <option value="1k">1K · 原生</option>
+        <option value="2k">2K</option>
+        <option value="4k">4K</option>
+        <option value="8k">8K</option>
+      </select>
+    </label>
   </div>
 </div></div>
 
@@ -1186,6 +1196,9 @@ async function poll() {
       if (s.image_engine && document.activeElement !== engSel) engSel.value = s.image_engine;
       engSel.disabled = !["idle", "done", "error"].includes(s.state);
     }
+    // 画质档位：随时可改（逐图后处理），只回显、不禁用
+    const qSel = $("qualitySel");
+    if (qSel && s.quality && document.activeElement !== qSel) qSel.value = s.quality;
 
     // 确认关卡：进入时填一次（后续轮询不覆盖你正在编辑的内容）
     if (s.state === "waiting_confirm") {
@@ -1269,6 +1282,18 @@ async function changeEngine(v) {
           + "并把对话切到 nano-banana 生图模型。下次「开始渲染」生效。");
     }
   } catch (e) { alert("切换失败：" + e.message); }
+}
+
+async function changeQuality(v) {
+  try {
+    const r = await (await fetch("/api/set_quality", { method: "POST",
+      headers: {"Content-Type":"application/json"}, body: JSON.stringify({ quality: v }) })).json();
+    if (!r.ok) { alert(r.msg || "切换画质失败"); return; }
+    if (v !== "1k") {
+      alert("已设为 " + v.toUpperCase() + " 画质。将在出图后本地 AI 超分（首次用会自动加载模型；"
+          + "高档位每张需数分钟）。只增强最终交付图。");
+    }
+  } catch (e) { alert("切换画质失败：" + e.message); }
 }
 
 /* ---------------- ChatGPT 连接状态 ---------------- */
