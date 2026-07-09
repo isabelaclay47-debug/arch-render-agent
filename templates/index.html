@@ -317,6 +317,14 @@
             onclick="launchChrome()">启动 Chrome 去登录</button>
     <a class="btn-ghost" href="/helper" style="text-decoration:none">提示词助手（无需账号）</a>
     <button class="btn-ghost" id="updateBtn" onclick="checkUpdate()" title="连网检查并更新到最新版">检查更新</button>
+    <label class="btn-ghost" style="display:flex;align-items:center;gap:6px;cursor:pointer"
+           title="生图用哪家：ChatGPT，或 Gemini 的 nano-banana（都走你的订阅、免 API key）。任务进行中不可切，下次「开始渲染」生效。文本推理始终走 ChatGPT。">
+      生图引擎
+      <select id="engineSel" onchange="changeEngine(this.value)" style="font:inherit;padding:2px 4px">
+        <option value="chatgpt">ChatGPT</option>
+        <option value="gemini">Gemini · nano-banana</option>
+      </select>
+    </label>
   </div>
 </div></div>
 
@@ -522,12 +530,14 @@
     <div class="editor-tools">
       <b>🖌 局部修改</b>
       <span style="flex:1"></span>
+      <button class="tool" id="toolSelect" onclick="setTool('select')">选择</button>
       <button class="tool active" id="toolBrush" onclick="setTool('brush')">手画</button>
       <button class="tool" id="toolLine" onclick="setTool('line')">直线</button>
       <button class="tool" id="toolArrow" onclick="setTool('arrow')">箭头</button>
       <button class="tool" id="toolRect" onclick="setTool('rect')">框选</button>
       <button class="tool" id="toolPoly" onclick="setTool('poly')">多边形套索</button>
       <button class="tool" id="toolSmear" onclick="setTool('smear')">涂抹</button>
+      <button class="tool" id="toolText" onclick="setTool('text')">文字</button>
       <button class="tool" id="toolEraser" onclick="setTool('eraser')">橡皮擦</button>
       <label class="tool" style="display:flex;align-items:center;gap:6px;cursor:default">
         线宽 <input type="range" id="editSize" min="4" max="60" value="18"
@@ -538,12 +548,13 @@
     </div>
     <canvas id="editCanvas"></canvas>
     <div class="editor-hint">用红色标出<b>唯一允许修改</b>的区域——AI 将被严格要求不动区域外的任何内容。<br>
-      手画/涂抹：按住拖动 · 直线/箭头：拖出 · 框选：拖出矩形 · 多边形套索：连续点、<b>双击闭合</b> · 橡皮擦：拖过要删掉的标记 · <b>线宽</b>滑块调粗细</div>
+      手画/涂抹：按住拖动 · 直线/箭头：拖出 · 框选：拖出矩形 · 多边形套索：连续点、<b>双击闭合</b> · 文字：点一下再输入 · <b>选择</b>：点已画标注→拖动移位、拖右下角缩放、双击文字改内容 · 橡皮擦：拖过要删掉的标记 · <b>线宽</b>滑块调粗细<br>
+      <b style="color:var(--wine)">编辑记录会自动保存</b>——万一出图中途停了，重开这张图或刷新页面，你圈的标注和指令都还在，改改提示词直接重新提交即可</div>
     <div id="edMaterialNote" style="display:none;font-size:12px;color:var(--wine);margin-top:8px">
       <img id="edMaterialThumb" style="width:34px;height:26px;object-fit:cover;border-radius:2px;vertical-align:middle;border:1px solid var(--sand)">
       已选材质，提交后将把圈出区域换成它 <button type="button" class="tool" style="padding:1px 8px" onclick="clearMaterial()">取消材质</button>
     </div>
-    <textarea id="editInstruction" placeholder="这个区域要怎么改？例如：把入口雨棚改成木格栅材质 / 去掉这个人 / 这块墙面换成清水混凝土"></textarea>
+    <textarea id="editInstruction" oninput="saveEditState()" placeholder="这个区域要怎么改？例如：把入口雨棚改成木格栅材质 / 去掉这个人 / 这块墙面换成清水混凝土"></textarea>
     <div class="row">
       <button class="btn-blue" style="flex:1" onclick="submitEdit()">提交局部修改（只改圈出的部分）</button>
     </div>
@@ -1147,6 +1158,13 @@ async function poll() {
     if (s.logs.length) { $("log").textContent = s.logs.join("\n");
                          $("log").scrollTop = $("log").scrollHeight; }
 
+    // 生图引擎开关：回显当前引擎；任务进行中禁用（下次开始渲染才生效）
+    const engSel = $("engineSel");
+    if (engSel) {
+      if (s.image_engine && document.activeElement !== engSel) engSel.value = s.image_engine;
+      engSel.disabled = !["idle", "done", "error"].includes(s.state);
+    }
+
     // 确认关卡：进入时填一次（后续轮询不覆盖你正在编辑的内容）
     if (s.state === "waiting_confirm") {
       $("confirmCard").style.display = "block";
@@ -1193,6 +1211,11 @@ async function poll() {
     for (; rendered < s.items.length; rendered++) {
       const hint = $("emptyHint"); if (hint) hint.remove();
       const it = s.items[rendered];
+      if (it.kind === "edit") {   // 局部修改成图回来了 → 那张源图的编辑记录已完成，清掉（需求②）
+        try { const p = localStorage.getItem("archedit:pending");
+              if (p) { localStorage.removeItem(editKey(p)); localStorage.removeItem("archedit:pending"); }
+        } catch (e) {}
+      }
       const url = `/images/${sessId}/${it.image}`;
       const div = document.createElement("div");
       div.className = "item";
@@ -1212,6 +1235,19 @@ async function poll() {
   setTimeout(poll, 2000);
 }
 function esc(t) { const d = document.createElement("div"); d.textContent = t || ""; return d.innerHTML; }
+
+/* ---------------- 生图引擎切换（ChatGPT / Gemini nano-banana） ---------------- */
+async function changeEngine(v) {
+  try {
+    const r = await (await fetch("/api/set_engine", { method: "POST",
+      headers: {"Content-Type":"application/json"}, body: JSON.stringify({ engine: v }) })).json();
+    if (!r.ok) { alert(r.msg || "切换失败"); }
+    else if (v === "gemini") {
+      alert("已切到 Gemini（nano-banana）生图。\n请确认专用 Chrome 里已登录 gemini.google.com，"
+          + "并把对话切到 nano-banana 生图模型。下次「开始渲染」生效。");
+    }
+  } catch (e) { alert("切换失败：" + e.message); }
+}
 
 /* ---------------- ChatGPT 连接状态 ---------------- */
 let checking = false;
@@ -1256,16 +1292,30 @@ receiveHandoff();
 /* ---------------- 局部修改画板 ---------------- */
 let edImg = null, edSource = "", edTool = "brush", strokes = [], drawing = null, erasing = false;
 let edSize = 18;                       // 画笔/箭头线宽（由「线宽」滑块控制，需求①）
+let edSel = null, edAct = null;        // 选择工具：选中的描边下标 / 当前移动·缩放动作
 const canvas = $("editCanvas"), ctx = canvas.getContext("2d");
-const TOOL_IDS = { brush:"toolBrush", line:"toolLine", arrow:"toolArrow", rect:"toolRect",
-                   poly:"toolPoly", smear:"toolSmear", eraser:"toolEraser" };
+const TOOL_IDS = { select:"toolSelect", brush:"toolBrush", line:"toolLine", arrow:"toolArrow",
+                   rect:"toolRect", poly:"toolPoly", smear:"toolSmear", text:"toolText", eraser:"toolEraser" };
+
+// 需求②：编辑记录按（会话+图名）持久化到 localStorage，出图中途停止/刷新都不丢
+function editKey(name) { return `archedit:${sessId || "s"}:${name}`; }
+function saveEditState() {
+  if (!edSource) return;
+  try { localStorage.setItem(editKey(edSource),
+    JSON.stringify({ strokes, instruction: $("editInstruction").value })); } catch (e) {}
+}
+function clearEditState(name) { try { localStorage.removeItem(editKey(name || edSource)); } catch (e) {} }
 
 function openEditor(imageName) {
   if (curState !== "waiting_feedback") {
     alert("局部修改只能在“等待点评”暂停时进行（每 5 轮暂停一次）"); return;
   }
-  edSource = imageName; strokes = []; drawing = null;
-  $("editInstruction").value = "";
+  edSource = imageName; drawing = null; edSel = null; edAct = null;
+  // 有上次没走完的编辑记录就恢复（改提示词重来 / 刷新页面 / 出图中途停了都还在）
+  let saved = null;
+  try { const raw = localStorage.getItem(editKey(imageName)); if (raw) saved = JSON.parse(raw); } catch (e) {}
+  strokes = saved && Array.isArray(saved.strokes) ? saved.strokes : [];
+  $("editInstruction").value = saved && saved.instruction ? saved.instruction : "";
   refreshMaterialNote();
   edImg = new Image();
   edImg.onload = () => {
@@ -1293,7 +1343,8 @@ function setTool(t) {
     $(id).classList.toggle("active", t === tool);
   // 切走时若有没闭合的多边形，丢弃
   if (t !== "poly" && drawing && drawing.tool === "poly") drawing = null;
-  canvas.style.cursor = t === "eraser" ? "cell" : "crosshair";
+  if (t !== "select") { edSel = null; edAct = null; }
+  canvas.style.cursor = t === "select" ? "move" : (t === "eraser" ? "cell" : "crosshair");
   render();
 }
 function undoStroke() {
@@ -1301,9 +1352,49 @@ function undoStroke() {
     drawing.pts.pop();
     if (!drawing.pts.length) drawing = null;
   } else strokes.pop();
-  render();
+  edSel = null; edAct = null;
+  render(); saveEditState();
 }
-function clearStrokes() { strokes = []; drawing = null; render(); }
+function clearStrokes() { strokes = []; drawing = null; edSel = null; edAct = null; render(); clearEditState(); }
+
+// ---- 通用几何：任意描边的包围盒/平移/缩放，供「选择」工具二次编辑（移动·缩放·改字）----
+function edBx(x0, y0, x1, y1) {
+  return { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+}
+function edBBox(s) {
+  if (s.tool === "text") {
+    ctx.font = `bold ${s.size}px "Microsoft YaHei", sans-serif`;
+    return { x: s.x, y: s.y, w: Math.max(14, ctx.measureText(s.text).width), h: s.size };
+  }
+  if (s.pts) {
+    const xs = s.pts.map(p => p[0]), ys = s.pts.map(p => p[1]);
+    return edBx(Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys));
+  }
+  return edBx(s.x0, s.y0, s.x1, s.y1);
+}
+function edMove(s, dx, dy) {
+  if (s.tool === "text") { s.x += dx; s.y += dy; return; }
+  if (s.pts) { s.pts = s.pts.map(p => [p[0] + dx, p[1] + dy]); return; }
+  s.x0 += dx; s.x1 += dx; s.y0 += dy; s.y1 += dy;
+}
+function edScale(s, bb, nw, nh) {
+  const sx = bb.w ? nw / bb.w : 1, sy = bb.h ? nh / bb.h : 1;
+  if (s.tool === "text") { s.size = Math.max(10, s.size * ((sx + sy) / 2)); return; }
+  const fx = x => bb.x + (x - bb.x) * sx, fy = y => bb.y + (y - bb.y) * sy;
+  if (s.pts) { s.pts = s.pts.map(p => [fx(p[0]), fy(p[1])]); return; }
+  s.x0 = fx(s.x0); s.x1 = fx(s.x1); s.y0 = fy(s.y0); s.y1 = fy(s.y1);
+}
+function edPickTop(x, y) {
+  for (let i = strokes.length - 1; i >= 0; i--) {
+    const bb = edBBox(strokes[i]), R = 8;
+    if (x >= bb.x - R && x <= bb.x + bb.w + R && y >= bb.y - R && y <= bb.y + bb.h + R) return i;
+  }
+  return null;
+}
+function edOnHandle(bb, x, y) {
+  const HS = Math.max(10, canvas.width / 90);
+  return Math.abs(x - (bb.x + bb.w)) <= HS && Math.abs(y - (bb.y + bb.h)) <= HS;
+}
 
 function render() {
   ctx.drawImage(edImg, 0, 0, canvas.width, canvas.height);
@@ -1334,7 +1425,22 @@ function render() {
         ctx.stroke();
         for (const p of s.pts) { ctx.beginPath(); ctx.arc(p[0], p[1], Math.max(3, W / 260), 0, 7); ctx.fill(); }
       }
+    } else if (s.tool === "text") {
+      ctx.save();
+      ctx.fillStyle = "rgba(255,40,40,.98)";
+      ctx.font = `bold ${s.size}px "Microsoft YaHei", sans-serif`;
+      ctx.textBaseline = "top"; ctx.fillText(s.text, s.x, s.y);
+      ctx.restore();
     }
+  }
+  if (edTool === "select" && edSel != null && strokes[edSel]) {   // 选中描边：蓝色虚线框 + 右下角缩放手柄
+    const bb = edBBox(strokes[edSel]);
+    ctx.save();
+    ctx.strokeStyle = "#3a7bd5"; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
+    ctx.strokeRect(bb.x, bb.y, bb.w, bb.h);
+    ctx.setLineDash([]); ctx.fillStyle = "#3a7bd5";
+    const hs = 9; ctx.fillRect(bb.x + bb.w - hs / 2, bb.y + bb.h - hs / 2, hs, hs);
+    ctx.restore();
   }
 }
 // 箭头头部：在终点画两条回折短线
@@ -1359,6 +1465,10 @@ function segDist(px, py, x0, y0, x1, y1) {
   return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
 }
 function hitStroke(s, x, y, R) {
+  if (s.tool === "text") {
+    const bb = edBBox(s);
+    return x >= bb.x - R && x <= bb.x + bb.w + R && y >= bb.y - R && y <= bb.y + bb.h + R;
+  }
   if (s.tool === "rect") {
     return x >= Math.min(s.x0, s.x1) - R && x <= Math.max(s.x0, s.x1) + R &&
            y >= Math.min(s.y0, s.y1) - R && y <= Math.max(s.y0, s.y1) + R;
@@ -1374,12 +1484,27 @@ function hitStroke(s, x, y, R) {
 function eraseAt(x, y) {
   const R = Math.max(20, canvas.width / 35);
   for (let k = strokes.length - 1; k >= 0; k--) {
-    if (hitStroke(strokes[k], x, y, R)) { strokes.splice(k, 1); render(); return; }
+    if (hitStroke(strokes[k], x, y, R)) { strokes.splice(k, 1); edSel = null; render(); saveEditState(); return; }
   }
 }
 canvas.addEventListener("pointerdown", e => {
   e.preventDefault(); canvas.setPointerCapture(e.pointerId);
   const [x, y] = evPos(e);
+  if (edTool === "select") {                        // 选择/移动：点已画标注→选中，拖动=移动，拖右下角=缩放
+    if (edSel != null && strokes[edSel]) {
+      const bb = edBBox(strokes[edSel]);
+      if (edOnHandle(bb, x, y)) { edAct = { mode: "resize", bb }; return; }
+    }
+    const idx = edPickTop(x, y);
+    edSel = idx;
+    if (idx != null) edAct = { mode: "move", lx: x, ly: y };
+    render(); return;
+  }
+  if (edTool === "text") {                           // 文字：点一下→输入
+    const t = prompt("输入文字：");
+    if (t && t.trim()) { strokes.push({ tool: "text", size: Math.max(20, edSize * 2), x, y, text: t.trim() }); render(); saveEditState(); }
+    return;
+  }
   if (edTool === "eraser") { erasing = true; eraseAt(x, y); return; }
   if (edTool === "poly") {                          // 逐点点击，双击闭合
     if (drawing && drawing.tool === "poly") drawing.pts.push([x, y]);
@@ -1392,6 +1517,13 @@ canvas.addEventListener("pointerdown", e => {
 });
 canvas.addEventListener("pointermove", e => {
   const [x, y] = evPos(e);
+  if (edAct) {                                       // 选择工具：移动或缩放选中的描边
+    const s = strokes[edSel];
+    if (!s) { edAct = null; return; }
+    if (edAct.mode === "move") { edMove(s, x - edAct.lx, y - edAct.ly); edAct.lx = x; edAct.ly = y; }
+    else { edScale(s, edAct.bb, x - edAct.bb.x, y - edAct.bb.y); edAct.bb = edBBox(s); }
+    render(); return;
+  }
   if (erasing) { eraseAt(x, y); return; }
   if (!drawing) return;
   if (drawing.tool === "poly") { drawing.hover = [x, y]; render(); return; }
@@ -1400,14 +1532,25 @@ canvas.addEventListener("pointermove", e => {
   render();
 });
 canvas.addEventListener("pointerup", () => {
+  if (edAct) { edAct = null; saveEditState(); return; }   // 结束移动/缩放并保存
   if (erasing) { erasing = false; return; }
   if (!drawing || drawing.tool === "poly") return;  // poly 由双击结束
-  strokes.push(drawing); drawing = null; render();
+  strokes.push(drawing); drawing = null; render(); saveEditState();
 });
-canvas.addEventListener("dblclick", () => {
+canvas.addEventListener("dblclick", e => {
+  if (edTool === "select") {                          // 双击选中的文字→改内容
+    const [x, y] = evPos(e);
+    const idx = edSel != null ? edSel : edPickTop(x, y);
+    const s = idx != null ? strokes[idx] : null;
+    if (s && s.tool === "text") {
+      const t = prompt("修改文字：", s.text);
+      if (t != null && t.trim()) { s.text = t.trim(); edSel = idx; render(); saveEditState(); }
+    }
+    return;
+  }
   if (drawing && drawing.tool === "poly" && drawing.pts.length >= 3) {
     drawing.closed = true; delete drawing.hover;
-    strokes.push(drawing); drawing = null; render();
+    strokes.push(drawing); drawing = null; render(); saveEditState();
   }
 });
 
@@ -1415,12 +1558,16 @@ async function submitEdit() {
   const instruction = $("editInstruction").value.trim();
   if (!strokes.length) { alert("请先用上面的工具在图上标红要修改的区域（多边形套索需双击闭合）"); return; }
   if (!instruction) { alert("请写清楚圈出的区域要怎么改"); return; }
+  edSel = null; edAct = null; render();   // 去掉选中蓝框，别把它压进发给 AI 的图
   const body = { source_image: edSource, instruction, marked: canvas.toDataURL("image/png") };
   // 材质换面（素材·材质）：带上所选材质样板，让 AI 只把圈选区换成该材质
   if (window._pendingMaterial && window._pendingMaterial.file) body.material = window._pendingMaterial.file;
   const j = await (await fetch("/api/regional_edit", { method: "POST",
     headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) })).json();
   if (!j.ok) { alert(j.msg); return; }
+  // 提交成功：记下这张源图，等它的「局部修改」成图回来了再清掉编辑记录；
+  // 若中途停止/失败，成图不会回来，记录就一直留着，重开即恢复（需求②）
+  try { localStorage.setItem("archedit:pending", edSource); } catch (e) {}
   window._pendingMaterial = null;
   closeEditor();
 }

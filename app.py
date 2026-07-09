@@ -23,6 +23,7 @@ from PIL import Image
 
 import prompt_engine as pe
 from chatgpt_client import CDP_PORT, ChatGPTClient, ChatGPTError, GenStalledError
+from gemini_client import GeminiClient, GeminiError
 
 try:
     import winreg
@@ -69,6 +70,28 @@ _confirm_event = threading.Event()
 _confirm = {"action": "confirm", "edited_zh": "", "note": ""}
 _finish_now = threading.Event()
 _nudge = threading.Event()  # 人工干预：让正在等待的浏览器操作立刻刷新重查
+
+# 生图引擎：chatgpt(默认) 或 gemini（网页驱动 gemini.google.com 的 nano-banana）。
+# 只切「生图/局部改图」这只手；理解/扩写提示词/查篡改等文本推理始终走 ChatGPT 导演对话。
+_ENGINES = ("chatgpt", "gemini")
+_image_engine = os.environ.get("ARA_IMAGE_ENGINE", "chatgpt").strip().lower()
+if _image_engine not in _ENGINES:
+    _image_engine = "chatgpt"
+
+
+def get_image_engine() -> str:
+    with _lock:
+        return _image_engine
+
+
+def set_image_engine(name: str) -> str:
+    global _image_engine
+    name = str(name or "").strip().lower()
+    if name not in _ENGINES:
+        raise ValueError(f"未知生图引擎：{name}（可选 {'/'.join(_ENGINES)}）")
+    with _lock:
+        _image_engine = name
+    return name
 
 
 def log(msg: str):
@@ -291,11 +314,19 @@ def _update_meta(sess_dir: str, **fields):
 def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: str,
                 quality: str, ratio: str, review_every: int = DEFAULT_REVIEW_EVERY):
     client = ChatGPTClient(log=log, nudge=_nudge)
+    engine = get_image_engine()
+    gen_client = None          # 生图专用 client；gemini 引擎时才另开，否则复用 ChatGPT
     try:
         with _lock:
             S["state"] = "connecting"
         log(f"正在连接 Chrome（调试端口 {CDP_PORT}）…")
-        client.connect()
+        # gemini 引擎下 ChatGPT 只做文本推理，不必开生图标签
+        client.connect(director_only=(engine == "gemini"))
+        if engine == "gemini":
+            log("生图引擎：Gemini（nano-banana）网页驱动；ChatGPT 只做文本推理（理解/提示词/查篡改）。")
+            gen_client = GeminiClient(log=log, nudge=_nudge)
+            gen_client.connect()
+        gen = gen_client if engine == "gemini" else client   # 「生图这只手」用哪个 client
         with _lock:
             S["state"] = "running"
 
@@ -418,11 +449,11 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                 log(f"第 {i} 轮：从原图底图重画（约 1-3 分钟）…")
                 gen_msg = pe.generation_message(prompt, quality, ratio)
                 gen_base = fidelity_base
-            client.new_generation_chat()
-            client.send(client.gen_page, gen_msg,
-                        image_paths=[gen_base], expect_image=True)
+            gen.new_generation_chat()
+            gen.send(gen.gen_page, gen_msg,
+                     image_paths=[gen_base], expect_image=True)
             img_path = os.path.join(sess_dir, f"iter_{i:02d}.png")
-            if not client.download_last_image(client.gen_page, img_path):
+            if not gen.download_last_image(gen.gen_page, img_path):
                 raise GenStalledError(f"第 {i} 轮似乎出图了但没抓到图片（页面可能假死）。")
             last_gen = img_path
             log(f"第 {i} 轮出图完成，对比原图检查篡改与画质…")
@@ -506,18 +537,18 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             tr = client.send(client.director_page,
                              pe.translate_instruction_prompt(instruction))
             instruction_en = pe.parse_director_reply(tr)["prompt_en"] or instruction
-            client.new_generation_chat()
+            gen.new_generation_chat()
             material_path = edit.get("material_path") or ""
             if material_path and os.path.isfile(material_path):
                 # 材质换面：把材质样板作为第 3 张图，只把圈选区换成该材质
-                client.send(client.gen_page,
-                            pe.regional_edit_with_material_message(instruction_en),
-                            image_paths=[src, marked, material_path], expect_image=True)
+                gen.send(gen.gen_page,
+                         pe.regional_edit_with_material_message(instruction_en),
+                         image_paths=[src, marked, material_path], expect_image=True)
             else:
-                client.send(client.gen_page, pe.regional_edit_message(instruction_en),
-                            image_paths=[src, marked], expect_image=True)
+                gen.send(gen.gen_page, pe.regional_edit_message(instruction_en),
+                         image_paths=[src, marked], expect_image=True)
             img_path = os.path.join(sess_dir, f"iter_{i:02d}.png")
-            if not client.download_last_image(client.gen_page, img_path):
+            if not gen.download_last_image(gen.gen_page, img_path):
                 raise GenStalledError(f"局部修改第 {i} 轮似乎出图了但没抓到图片（页面可能假死）。")
             log("局部修改出图完成，检查标记区域外是否被动…")
             qc_reply = client.send(client.director_page,
@@ -657,7 +688,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             S["final_path"] = out
         log(f"完成！最终图已放到桌面：{out}")
 
-    except ChatGPTError as e:
+    except (ChatGPTError, GeminiError) as e:
         with _lock:
             S["state"] = "error"
             S["error"] = str(e)
@@ -669,6 +700,8 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
         log(f"未预期的错误：{e}")
     finally:
         client.close()
+        if gen_client is not None:
+            gen_client.close()
 
 
 # ---------------- 路由 ----------------
@@ -748,7 +781,22 @@ def api_start():
 @app.route("/api/status")
 def api_status():
     with _lock:
-        return jsonify(S)
+        data = dict(S)
+        data["image_engine"] = _image_engine   # 当前生图引擎，供前端切换开关回显
+    return jsonify(data)
+
+
+@app.route("/api/set_engine", methods=["POST"])
+def api_set_engine():
+    """切换生图引擎（chatgpt / gemini）。任务运行中不许切——本轮连接已建立，切了会乱。
+    下次「开始渲染」时生效。"""
+    if S["state"] not in ("idle", "done", "error"):
+        return jsonify({"ok": False, "msg": "任务进行中不能切换生图引擎，请等本次结束或先结束任务"}), 400
+    try:
+        name = set_image_engine((request.get_json(silent=True) or {}).get("engine"))
+    except ValueError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 400
+    return jsonify({"ok": True, "engine": name})
 
 
 @app.route("/api/feedback", methods=["POST"])
@@ -991,8 +1039,10 @@ def api_helper_refine():
 #  ChatGPT 是首选；这条是没 VPN/没账号时的兜底。未装 Ollama 时优雅降级 + 给一键指引。
 # ======================================================================
 OLLAMA_URL = "http://127.0.0.1:11434"
-# 常见的本地视觉模型名（按识图效果优先排序）；按名字包含匹配已 pull 的模型
-VISION_MODEL_HINTS = ("qwen2.5-vl", "qwen2-vl", "minicpm-v", "llama3.2-vision",
+# 常见的本地视觉模型名（按识图效果优先排序）；按名字包含匹配已 pull 的模型。
+# 注意 Ollama 的实际库名是 qwen2.5vl（无连字符），而选择项/习惯写法常带连字符，
+# 故匹配时统一去掉 . 和 -（见 _pick_vision_model），否则 pull 成功也识别不到、误判成“下载失败”。
+VISION_MODEL_HINTS = ("qwen2.5vl", "qwen2.5-vl", "qwen2-vl", "minicpm-v", "llama3.2-vision",
                       "llava", "bakllava", "moondream", "gemma3")
 VISION_DESCRIBE_PROMPT = (
     "You are an architectural visualization assistant. Describe this architecture "
@@ -1012,9 +1062,12 @@ def _ollama_models() -> list:
 
 
 def _pick_vision_model(models: list) -> str:
+    # 去掉 . 和 - 再做包含匹配：Ollama 库名 qwen2.5vl 与写法 qwen2.5-vl 才能对上
+    norm = lambda s: s.lower().replace("-", "").replace(".", "")
     for hint in VISION_MODEL_HINTS:
+        h = norm(hint)
         for name in models:
-            if hint in name.lower():
+            if h in norm(name):
                 return name
     return ""
 

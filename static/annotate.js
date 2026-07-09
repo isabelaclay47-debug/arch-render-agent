@@ -5,11 +5,12 @@
   const A = {
     ops: [], tool: "brush", color: "#e12020", size: 6,
     img: null, natW: 0, natH: 0, scale: 1, drawing: null, onDone: null,
+    sel: null, act: null,          // sel=选中的 op 下标；act=当前移动/缩放动作
   };
   let canvas, ctx;
 
   const TOOLS = [
-    ["brush", "画笔"], ["line", "直线"], ["arrow", "箭头"],
+    ["select", "选择"], ["brush", "画笔"], ["line", "直线"], ["arrow", "箭头"],
     ["rect", "矩形"], ["ellipse", "椭圆"], ["pen", "钢笔选取"],
     ["text", "文字"], ["eraser", "橡皮擦"],
   ];
@@ -34,7 +35,7 @@
           <button class="ann-t ann-done" id="annDone">完成标注</button>
         </div>
         <canvas id="annCanvas"></canvas>
-        <div class="ann-hint">画笔按住拖 · 直线/箭头/矩形/椭圆 拖出 · 钢笔选取逐点点击、<b>双击或点回起点闭合</b>成选区 · 文字点一下再输入 · <b>配景图章可拖动，拖右下角缩放</b> · 橡皮擦点掉标记</div>
+        <div class="ann-hint"><b>选择</b>：点任意标注→拖动移位、拖右下角缩放、<b>双击文字改内容</b> · 画笔按住拖 · 直线/箭头/矩形/椭圆 拖出 · 钢笔逐点点击、<b>双击闭合</b> · 文字点一下再输入 · 橡皮擦点掉标记</div>
       </div>`;
     document.body.appendChild(wrap);
     canvas = document.getElementById("annCanvas");
@@ -45,7 +46,7 @@
     document.getElementById("annColor").addEventListener("input", e => A.color = e.target.value);
     document.getElementById("annSize").addEventListener("input", e => A.size = +e.target.value);
     document.getElementById("annUndo").addEventListener("click", undo);
-    document.getElementById("annClear").addEventListener("click", () => { A.ops = []; A.drawing = null; render(); });
+    document.getElementById("annClear").addEventListener("click", () => { A.ops = []; A.drawing = null; A.sel = null; A.act = null; render(); });
     document.getElementById("annCancel").addEventListener("click", close);
     document.getElementById("annDone").addEventListener("click", done);
 
@@ -60,16 +61,61 @@
       A.drawing.pts.pop();
       if (!A.drawing.pts.length) A.drawing = null;
     } else A.ops.pop();
+    A.sel = null; A.act = null;                    // 标注列表变了，选中框失效
     render();
   }
 
   function setTool(t) {
     // 切走时若有没闭合的钢笔选区，丢弃挂起的路径
     if (t !== "pen" && A.drawing && A.drawing.tool === "pen") A.drawing = null;
+    if (t !== "select") { A.sel = null; A.act = null; }   // 离开选择工具即清掉选中框
     A.tool = t;
     document.querySelectorAll("#annStudio .ann-t[data-tool]").forEach(b =>
       b.classList.toggle("on", b.dataset.tool === t));
+    canvas.style.cursor = t === "select" ? "move" : (t === "eraser" ? "cell" : "crosshair");
     render();
+  }
+
+  // ---- 通用几何：任意标注的包围盒/平移/缩放，供「选择」工具二次编辑（移动·缩放·改字）----
+  function _bx(x0, y0, x1, y1) {
+    return { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+  }
+  function bboxOf(op) {
+    if (op.tool === "stamp") return { x: op.x, y: op.y, w: op.w, h: op.h };
+    if (op.tool === "text") {
+      ctx.font = `bold ${op.size}px "Microsoft YaHei", sans-serif`;
+      return { x: op.x, y: op.y, w: Math.max(14, ctx.measureText(op.text).width), h: op.size };
+    }
+    if (op.pts) {
+      const xs = op.pts.map(p => p[0]), ys = op.pts.map(p => p[1]);
+      return _bx(Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys));
+    }
+    return _bx(op.x0, op.y0, op.x1, op.y1);
+  }
+  function moveOp(op, dx, dy) {
+    if (op.tool === "stamp" || op.tool === "text") { op.x += dx; op.y += dy; return; }
+    if (op.pts) { op.pts = op.pts.map(p => [p[0] + dx, p[1] + dy]); return; }
+    op.x0 += dx; op.x1 += dx; op.y0 += dy; op.y1 += dy;
+  }
+  // 把 op 的包围盒左上角固定，右下角缩放到 (bb.x+nw, bb.y+nh)
+  function scaleOp(op, bb, nw, nh) {
+    const sx = bb.w ? nw / bb.w : 1, sy = bb.h ? nh / bb.h : 1;
+    if (op.tool === "stamp") { op.w = Math.max(20, nw); op.h = Math.max(20, nh); return; }
+    if (op.tool === "text") { op.size = Math.max(8, op.size * ((sx + sy) / 2)); return; }
+    const fx = x => bb.x + (x - bb.x) * sx, fy = y => bb.y + (y - bb.y) * sy;
+    if (op.pts) { op.pts = op.pts.map(p => [fx(p[0]), fy(p[1])]); return; }
+    op.x0 = fx(op.x0); op.x1 = fx(op.x1); op.y0 = fy(op.y0); op.y1 = fy(op.y1);
+  }
+  function pickTop(x, y) {                    // 命中最上面（最后画的）那个标注，返回下标
+    for (let i = A.ops.length - 1; i >= 0; i--) {
+      const bb = bboxOf(A.ops[i]), R = 8;
+      if (x >= bb.x - R && x <= bb.x + bb.w + R && y >= bb.y - R && y <= bb.y + bb.h + R) return i;
+    }
+    return null;
+  }
+  function onResizeHandle(bb, x, y) {         // 是否点在右下角缩放手柄上
+    const HS = Math.max(10, canvas.width / 90);
+    return Math.abs(x - (bb.x + bb.w)) <= HS && Math.abs(y - (bb.y + bb.h)) <= HS;
   }
 
   function pos(e) {
@@ -81,6 +127,16 @@
   function onDown(e) {
     e.preventDefault(); canvas.setPointerCapture(e.pointerId);
     const [x, y] = pos(e);
+    if (A.tool === "select") {              // 选择/移动：点已有标注→选中，拖动=移动，拖右下角=缩放
+      if (A.sel != null && A.ops[A.sel]) {
+        const bb = bboxOf(A.ops[A.sel]);
+        if (onResizeHandle(bb, x, y)) { A.act = { mode: "resize", bb }; return; }
+      }
+      const idx = pickTop(x, y);
+      A.sel = idx;
+      if (idx != null) A.act = { mode: "move", lx: x, ly: y };
+      render(); return;
+    }
     const sh = _hitStamp(x, y);            // 图章优先：命中已贴配景就拖动/缩放（跨工具，橡皮擦除外）
     if (sh && A.tool !== "eraser") { A.stampAct = sh; return; }
     if (A.tool === "text") {
@@ -106,6 +162,13 @@
   }
   function onMove(e) {
     const [x, y] = pos(e);
+    if (A.act) {                            // 选择工具：移动或缩放选中的标注
+      const op = A.ops[A.sel];
+      if (!op) { A.act = null; return; }
+      if (A.act.mode === "move") { moveOp(op, x - A.act.lx, y - A.act.ly); A.act.lx = x; A.act.ly = y; }
+      else { scaleOp(op, A.act.bb, x - A.act.bb.x, y - A.act.bb.y); A.act.bb = bboxOf(op); }
+      render(); return;
+    }
     if (A.stampAct) {                       // 拖动/缩放图章
       const s = A.stampAct;
       if (s.mode === "move") { s.op.x = x - s.dx; s.op.y = y - s.dy; }
@@ -119,7 +182,17 @@
     else { A.drawing.x1 = x; A.drawing.y1 = y; }
     render();
   }
-  function onDblClick() {
+  function onDblClick(e) {
+    if (A.tool === "select") {              // 双击选中的文字→改内容（其余类型忽略）
+      const [x, y] = pos(e);
+      const idx = A.sel != null ? A.sel : pickTop(x, y);
+      const op = idx != null ? A.ops[idx] : null;
+      if (op && op.tool === "text") {
+        const t = prompt("修改文字：", op.text);
+        if (t != null && t.trim()) { op.text = t.trim(); A.sel = idx; render(); }
+      }
+      return;
+    }
     if (A.drawing && A.drawing.tool === "pen" && A.drawing.pts.length >= 3) closePen();
   }
   function closePen() {
@@ -127,6 +200,7 @@
     A.ops.push(A.drawing); A.drawing = null; render();
   }
   function onUp() {
+    if (A.act) { A.act = null; return; }              // 结束选择工具的移动/缩放
     if (A.stampAct) { A.stampAct = null; return; }   // 结束图章拖动/缩放
     if (!A.drawing) return;
     if (A.drawing.tool === "pen") return;   // 钢笔选区由点击/双击控制，pointerup 不结束
@@ -137,7 +211,7 @@
   function eraseAt(x, y) {
     const R = Math.max(14, canvas.width / 40);
     for (let i = A.ops.length - 1; i >= 0; i--) {
-      if (hit(A.ops[i], x, y, R)) { A.ops.splice(i, 1); render(); return; }
+      if (hit(A.ops[i], x, y, R)) { A.ops.splice(i, 1); A.sel = null; A.act = null; render(); return; }
     }
   }
   function hit(op, x, y, R) {
@@ -208,6 +282,15 @@
     if (!A.img) return;   // 图未加载完（如初始 setTool）时不画，避免 drawImage(null) 报错
     ctx.drawImage(A.img, 0, 0, canvas.width, canvas.height);
     [...A.ops, A.drawing].filter(Boolean).forEach(op => drawOp(ctx, op, 1, true));
+    if (A.tool === "select" && A.sel != null && A.ops[A.sel]) {   // 选中标注：蓝色虚线框 + 右下角缩放手柄
+      const bb = bboxOf(A.ops[A.sel]);
+      ctx.save();
+      ctx.strokeStyle = "#3a7bd5"; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
+      ctx.strokeRect(bb.x, bb.y, bb.w, bb.h);
+      ctx.setLineDash([]); ctx.fillStyle = "#3a7bd5";
+      const hs = 9; ctx.fillRect(bb.x + bb.w - hs / 2, bb.y + bb.h - hs / 2, hs, hs);
+      ctx.restore();
+    }
   }
 
   // 配景图章命中检测：右下角手柄→缩放，图章内部→移动。跨工具生效（贴完仍可随时拖）
@@ -244,7 +327,7 @@
 
   function openAnnotate(src, onDone) {
     ensureDom();
-    A.ops = []; A.drawing = null; A.onDone = onDone;
+    A.ops = []; A.drawing = null; A.sel = null; A.act = null; A.onDone = onDone;
     setTool("brush");
     const img = new Image();
     img.onload = () => {

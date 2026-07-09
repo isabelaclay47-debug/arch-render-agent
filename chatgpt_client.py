@@ -138,7 +138,12 @@ class ChatGPTClient:
                 page = self._current_page(role)
         try:
             if role == "gen":
-                self.new_generation_chat()      # 生图：换个干净的新对话重发，救活假死的标签
+                # 第一次卡死换新标签救；换标签还不行（attempt>=2）→ 直接另开一个新窗口
+                # （需求：图片卡死、过几分钟干预仍不成功，就直接开新窗户，而不是干等）。
+                if attempt >= 2:
+                    self.new_generation_window()
+                else:
+                    self.new_generation_chat()  # 生图：换个干净的新对话重发，救活假死的标签
             elif page is not None:
                 page.reload(wait_until="domcontentloaded", timeout=60000)
                 page.wait_for_timeout(3000)
@@ -179,6 +184,60 @@ class ChatGPTClient:
                 old.close()   # 关掉用旧了的标签，避免标签堆积
             except Exception:
                 pass
+
+    def new_generation_window(self):
+        """比换标签更狠一档：另开一个**真·新浏览器窗口**再导航。用于生图反复卡死、
+        换新标签也救不活（整窗假死）时——对应需求：卡死几分钟干预不成功就直接开新窗户。"""
+        self.log("换新标签仍未出图，改为**另开一个新窗口**重试…")
+        old = self.gen_page
+        self.gen_page = self._open_fresh_gen_window()
+        if old is not None and old is not self.gen_page:
+            try:
+                old.close()
+            except Exception:
+                pass
+
+    def _alive_opener(self):
+        """找一个还活着的页面当 window.open 的发起者；都死了返回 None。"""
+        for p in (self.director_page, self.gen_page):
+            if self._page_alive(p):
+                return p
+        try:
+            for p in self._ctx.pages:
+                if self._page_alive(p):
+                    return p
+        except Exception:
+            pass
+        return None
+
+    def _open_fresh_gen_window(self, tries: int = 2):
+        """用一个活着的页面 window.open 出一个新窗口并导航到 ChatGPT 新对话。
+        开窗失败退回新标签逻辑；页面全死则整体重连。"""
+        last = None
+        for i in range(tries):
+            opener = self._alive_opener()
+            if opener is None:
+                try:
+                    self._reconnect()
+                    return self.gen_page
+                except Exception as e:
+                    last = e
+                    time.sleep(1.5)
+                    continue
+            try:
+                with self._ctx.expect_page(timeout=20000) as pinfo:
+                    opener.evaluate(
+                        "() => window.open('" + CHATGPT_URL + "','_blank','width=1400,height=1000')")
+                page = pinfo.value
+                page.wait_for_load_state("domcontentloaded", timeout=60000)
+                page.wait_for_timeout(2000)
+                return page
+            except Exception as e:
+                last = e
+                self.log(f"开新窗口失败（{str(e)[:70]}），重试（{i + 1}/{tries}）…")
+                time.sleep(1.5)
+        self.log("开新窗口多次失败，退回新标签方式。")
+        return self._open_fresh_gen_chat()
 
     def _open_fresh_gen_chat(self, tries: int = 3):
         """开一个全新标签页并导航到 ChatGPT 新对话。ERR_CONNECTION_RESET 等瞬时错误
