@@ -18,7 +18,7 @@ import time
 from datetime import datetime
 
 import requests
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 from PIL import Image
 
 import prompt_engine as pe
@@ -1849,7 +1849,11 @@ def api_handoff_get(to):
     path = os.path.join(HANDOFF_DIR, f"{to}.jpg")
     if not os.path.isfile(path):
         return jsonify({"ok": False}), 404
-    return send_from_directory(HANDOFF_DIR, f"{to}.jpg")
+    # 读进内存再返回、立即释放文件句柄：否则 Windows 上句柄未放，
+    # 紧接着的 handoff_clear 删不掉（WinError 32 被占用），暂存图残留、下次又自动填。
+    with open(path, "rb") as f:
+        data = f.read()
+    return Response(data, mimetype="image/jpeg")
 
 
 @app.route("/api/handoff_clear", methods=["POST"])
