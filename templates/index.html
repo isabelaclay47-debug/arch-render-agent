@@ -5,21 +5,30 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>建筑渲染智能体</title>
 <style>
-  /* ── Sherwin-Williams 色板 ─────────────────────────────
-     SW7012 Creamy #EFE8DB · SW9611 Minimalist #D5CBBA
-     SW7504 Keystone Gray #A79C93 · SW7580 Carnelian #5B4144
-     SW7675 Sealskin #48423B                              */
+  /* ── 暗房工作台 · Dark Studio ───────────────────────────
+     图像是画廊射灯下的作品：深炭底让渲染图浮起、琥珀金是唯一的光。
+     变量名沿用旧命名（JS 内联样式仍引用），仅把值重映射到暗色。 */
   :root {
-    --cream: #EFE8DB; --paper: #FAF6EE; --paper2: #F3EDE1;
-    --sand: #D5CBBA; --taupe: #A79C93;
-    --wine: #5B4144; --wine-deep: #4A3438;
-    --ink: #48423B; --ink-deep: #3A352F;
-    --gold: #A8853C; --sage: #6B8F5B; --brick: #A34242;
-    --serif: Georgia, "Palatino Linotype", "STZhongsong", "SimSun", serif;
+    --cream: #14130F;      /* 页面底：深炭暖黑 */
+    --paper: #1E1B15;      /* 卡片/面板 */
+    --paper2: #262319;     /* 内嵌层（问题框/预览/日志邻接） */
+    --field: #211E17;      /* 表单控件底（取代所有白底 #fff） */
+    --sand: #3B372C;       /* 发丝级边框 */
+    --line: #2C2920;       /* 更暗的分隔线 */
+    --taupe: #9B9483;      /* 次要文字 */
+    --wine: #D9A441;       /* 主强调：琥珀金（原酒红位） */
+    --wine-deep: #ECBA5B;   /* 强调 hover（暗底上更亮） */
+    --ink: #EBE6DA;        /* 主文字（浅） */
+    --ink-deep: #F6F2E8;   /* 最强文字 */
+    --gold: #D9A441; --sage: #74C078; --brick: #E1735E;
+    --glow: rgba(217,164,65,.14);            /* 琥珀微光 */
+    --serif: "Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI",
+             "Microsoft YaHei", system-ui, sans-serif;   /* 展示用 grotesk（系统字体，离线可用） */
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--cream); color: var(--ink);
-         font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+         font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+         -webkit-font-smoothing: antialiased; }
 
   /* ── 页眉 ── */
   .top { padding: 34px 34px 0; }
@@ -42,9 +51,9 @@
   .top p { margin: 10px 0 0; color: var(--taupe); font-size: 12.5px; letter-spacing: 1.5px; }
   .swatches { display: flex; width: 220px; height: 5px; margin-top: 16px; }
   .swatches i { flex: 1; }
-  .swatches i:nth-child(1){background:#EFE8DB}.swatches i:nth-child(2){background:#D5CBBA}
-  .swatches i:nth-child(3){background:#A79C93}.swatches i:nth-child(4){background:#5B4144}
-  .swatches i:nth-child(5){background:#48423B}
+  .swatches i:nth-child(1){background:#211E17}.swatches i:nth-child(2){background:#3B372C}
+  .swatches i:nth-child(3){background:#6E6047}.swatches i:nth-child(4){background:#B07F2E}
+  .swatches i:nth-child(5){background:#D9A441;box-shadow:0 0 12px -2px var(--glow)}
 
   .layout { display: grid; grid-template-columns: 400px 1fr; gap: 26px;
             max-width: 1480px; margin: 0 auto; padding: 26px 34px 100px; }
@@ -54,8 +63,8 @@
   @media (max-width: 980px) { .left { position: static; } }
 
   .card { background: var(--paper); border: 1px solid var(--sand);
-          border-radius: 4px; padding: 22px;
-          box-shadow: 0 1px 2px rgba(72,66,59,.05), 0 6px 18px rgba(72,66,59,.05); }
+          border-radius: 8px; padding: 22px;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 12px 30px rgba(0,0,0,.35); }
   .card h2 { margin: 0 0 16px; font-family: var(--serif); font-size: 15px;
              font-weight: 600; color: var(--wine); letter-spacing: 3px; }
   .card h2 small { font-family: "Segoe UI","Microsoft YaHei",sans-serif; font-weight: 400;
@@ -64,16 +73,20 @@
   label { display: block; font-size: 13px; margin: 15px 0 7px; color: var(--ink-deep);
           font-weight: 600; }
   label small { color: var(--taupe); font-weight: 400; }
-  textarea { width: 100%; min-height: 96px; background: #fff; color: var(--ink);
+  textarea { width: 100%; min-height: 96px; background: var(--field); color: var(--ink);
              border: 1px solid var(--sand); border-radius: 3px; padding: 11px 13px;
              font: 13px/1.7 inherit; resize: vertical; }
   textarea:focus { outline: none; border-color: var(--wine); }
-  textarea::placeholder { color: #BDB2A4; }
+  textarea::placeholder { color: #7C7565; }
+  select { background: var(--field); color: var(--ink); border: 1px solid var(--sand);
+           border-radius: 999px; padding: 5px 12px; font: inherit; cursor: pointer; }
+  select:focus { outline: none; border-color: var(--wine); }
+  option { background: var(--paper); color: var(--ink); }
 
   .drop { border: 1px dashed var(--taupe); border-radius: 3px; padding: 13px;
           text-align: center; color: var(--taupe); font-size: 12.5px; cursor: pointer;
           background: var(--paper2); transition: all .15s; }
-  .drop:hover { border-color: var(--wine); color: var(--wine); background: #fff; }
+  .drop:hover { border-color: var(--wine); color: var(--wine); background: var(--field); }
   .drop input { display: none; }
   .thumbs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
   .thumb-wrap { position: relative; width: 64px; height: 48px; }
@@ -87,7 +100,7 @@
   .thumb-ann { top: -6px; left: -6px; background: var(--taupe, #6b6153); font-size: 10px; }
   .thumb-btn:hover { filter: brightness(1.15); }
   /* 素材库 */
-  .asset-lib { border: 1px solid var(--sand); border-radius: 3px; padding: 8px; margin-top: 4px; background: #fff; }
+  .asset-lib { border: 1px solid var(--sand); border-radius: 3px; padding: 8px; margin-top: 4px; background: var(--field); }
   .asset-tabs { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
   .asset-tab { padding: 4px 12px; border: 1px solid var(--sand); background: var(--paper2, #fff);
                border-radius: 999px; cursor: pointer; font-size: 12px; color: var(--ink); }
@@ -97,14 +110,15 @@
   .asset-cell img { width: 72px; height: 54px; object-fit: cover; border-radius: 2px;
                     border: 1px solid var(--sand); cursor: zoom-in; display: block; }
   .asset-use { width: 100%; margin-top: 3px; padding: 2px 0; font-size: 11px; cursor: pointer;
-               border: 1px solid var(--sand); border-radius: 2px; background: var(--ink); color: var(--cream); }
-  .asset-use:hover { filter: brightness(1.12); }
+               border: 1px solid rgba(217,164,65,.4); border-radius: 3px;
+               background: rgba(217,164,65,.14); color: var(--wine); }
+  .asset-use:hover { background: rgba(217,164,65,.24); }
   .asset-empty { font-size: 12px; color: var(--taupe); padding: 4px 2px; }
 
   .pills { display: flex; gap: 8px; flex-wrap: wrap; }
   .pills input { display: none; }
   .pills span { display: inline-block; padding: 7px 17px; border-radius: 999px;
-                border: 1px solid var(--sand); background: #fff;
+                border: 1px solid var(--sand); background: var(--field);
                 font-size: 12.5px; color: var(--ink); cursor: pointer; transition: all .15s; }
   .pills span:hover { border-color: var(--wine); color: var(--wine); }
   .pills input:checked + span { background: var(--wine); border-color: var(--wine);
@@ -113,11 +127,11 @@
 
   .preset-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 10px; }
   .preset-tab { padding: 6px 10px; border-radius: 3px; border: 1px solid var(--sand);
-                background: #fff; color: var(--taupe); font-size: 11.5px; font-weight: 500; }
+                background: var(--field); color: var(--taupe); font-size: 11.5px; font-weight: 500; }
   .preset-tab.active { color: var(--cream); background: var(--wine); border-color: var(--wine); }
   .preset-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 7px; }
   .preset-btn { min-height: 34px; padding: 7px 8px; border: 1px solid var(--sand);
-                background: #fff; color: var(--ink); border-radius: 3px;
+                background: var(--field); color: var(--ink); border-radius: 3px;
                 font-size: 12px; line-height: 1.35; font-weight: 500; text-align: left; }
   .preset-btn:hover { border-color: var(--wine); color: var(--wine); background: var(--paper2); }
   .preset-preview { min-height: 58px; margin-top: 9px; padding: 9px 10px;
@@ -132,9 +146,10 @@
                  transition: background .15s; }
   .btn-primary:hover { background: var(--wine-deep); }
   .btn-primary:disabled { background: var(--sand); color: #fff; cursor: not-allowed; }
-  .btn-blue { background: var(--ink); color: var(--cream); }
-  .btn-blue:hover { background: var(--ink-deep); }
-  .btn-green { background: var(--sage); color: #fff; }
+  .btn-blue { background: #29303C; color: #CFE0F2; border: 1px solid #3A4657; }
+  .btn-blue:hover { background: #323C4B; border-color: #4A5A70; }
+  .btn-green { background: var(--sage); color: #10130E; font-weight: 700; }
+  .btn-green:hover { filter: brightness(1.08); }
   .btn-ghost { background: transparent; border: 1px solid var(--taupe);
                color: var(--taupe); font-weight: 400; padding: 8px 14px; font-size: 12.5px; }
   .btn-ghost:hover { color: var(--wine); border-color: var(--wine); }
@@ -147,9 +162,10 @@
   .pulse.error { background: var(--brick); }
   @keyframes pulse { 50% { opacity: .25; } }
   #stateText { font-size: 13.5px; }
-  #log { background: var(--ink); border: 1px solid var(--ink); color: var(--sand);
-         font: 11.5px/1.8 Consolas, monospace; border-radius: 3px; padding: 11px 14px;
-         max-height: 170px; overflow-y: auto; white-space: pre-wrap; margin-top: 14px; }
+  #log { background: #100E0A; border: 1px solid var(--line); color: #C7B182;
+         font: 11.5px/1.8 Consolas, "Cascadia Mono", monospace; border-radius: 6px;
+         padding: 11px 14px; max-height: 170px; overflow-y: auto; white-space: pre-wrap;
+         margin-top: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,.03); }
 
   #clarifyCard { border-left: 3px solid var(--wine); }
   #clarifyCard b { color: var(--wine); font-size: 13.5px; letter-spacing: 1px; }
@@ -167,13 +183,16 @@
              gap: 18px; }
   .empty { grid-column: 1/-1; text-align: center; color: var(--taupe); padding: 80px 0;
            font-size: 13px; letter-spacing: 3px; font-family: var(--serif); }
-  .item { background: var(--paper); border: 1px solid var(--sand); border-radius: 4px;
-          overflow: hidden; transition: all .2s;
-          box-shadow: 0 1px 2px rgba(72,66,59,.05); }
-  .item:hover { border-color: var(--wine); box-shadow: 0 10px 26px rgba(72,66,59,.14);
-                transform: translateY(-2px); }
+  /* ▸ Signature：暗底上的画廊射灯——渲染图浮起、镶琥珀光环、投深影 */
+  .item { background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
+          overflow: hidden; transition: transform .22s ease, box-shadow .22s ease, border-color .22s;
+          box-shadow: 0 6px 16px rgba(0,0,0,.3); }
+  .item:hover { border-color: rgba(217,164,65,.55);
+                box-shadow: 0 0 0 1px rgba(217,164,65,.35), 0 22px 48px rgba(0,0,0,.6),
+                            0 0 40px -8px var(--glow);
+                transform: translateY(-4px); }
   .item img { width: 100%; aspect-ratio: 3/2; object-fit: cover; display: block;
-              cursor: zoom-in; background: var(--paper2); }
+              cursor: zoom-in; background: #0E0D0A; }
   .item .meta { padding: 13px 15px; font-size: 12px; }
   .item .badge { display: inline-block; border: 1px solid var(--wine); border-radius: 2px;
                  padding: 2px 10px; font-size: 11px; color: var(--wine);
@@ -186,17 +205,17 @@
                 max-height: 190px; overflow-y: auto; background: var(--paper2);
                 border-radius: 3px; padding: 9px 11px; }
 
-  #lightbox { position: fixed; inset: 0; background: rgba(58,53,47,.94); display: none;
+  #lightbox { position: fixed; inset: 0; background: rgba(6,5,4,.9); display: none;
               align-items: center; justify-content: center; z-index: 99; cursor: zoom-out; }
   #lightbox img { max-width: 96vw; max-height: 96vh; border-radius: 2px; }
 
   .editbtn { display: block; width: 100%; margin-top: 10px; padding: 7px 0;
              background: transparent; border: 1px solid var(--sand); color: var(--taupe);
              border-radius: 3px; font-size: 12px; font-weight: 400; letter-spacing: 1px; }
-  .editbtn:hover { color: var(--wine); border-color: var(--wine); background: #fff; }
+  .editbtn:hover { color: var(--wine); border-color: var(--wine); background: var(--field); }
 
   /* 局部修改画板 */
-  #editor { position: fixed; inset: 0; background: rgba(58,53,47,.94); display: none;
+  #editor { position: fixed; inset: 0; background: rgba(6,5,4,.9); display: none;
             z-index: 100; align-items: center; justify-content: center; }
   .editor-box { background: var(--paper); border: 1px solid var(--sand); border-radius: 4px;
                 padding: 18px; max-width: 96vw; max-height: 96vh; overflow: auto; }
@@ -205,7 +224,7 @@
   .editor-tools b { font-family: var(--serif); font-size: 15px; color: var(--wine);
                     letter-spacing: 2px; }
   .tool { padding: 7px 16px; border-radius: 3px; border: 1px solid var(--sand);
-          background: #fff; color: var(--ink); font-size: 12.5px; font-weight: 400; }
+          background: var(--field); color: var(--ink); font-size: 12.5px; font-weight: 400; }
   .tool:hover { border-color: var(--wine); color: var(--wine); }
   .tool.active { background: var(--wine); border-color: var(--wine); color: var(--cream);
                  font-weight: 600; }
@@ -216,14 +235,14 @@
   .editor-hint b { color: var(--wine); }
 
   /* 底图标注工作室（阶段1）——annotate.js 的样式；渲染前给底图加箭头/文字/椭圆/画笔 */
-  #annStudio { position: fixed; inset: 0; background: rgba(58,53,47,.94); display: none;
+  #annStudio { position: fixed; inset: 0; background: rgba(6,5,4,.9); display: none;
                z-index: 101; align-items: center; justify-content: center; }
   .ann-box { background: var(--paper); border: 1px solid var(--sand); border-radius: 4px;
              padding: 18px; max-width: 96vw; max-height: 96vh; overflow: auto; }
   .ann-tools { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
   .ann-tools b { font-family: var(--serif); font-size: 15px; color: var(--wine); letter-spacing: 2px; }
   .ann-toolset { display: flex; gap: 6px; flex-wrap: wrap; }
-  .ann-t { padding: 7px 14px; border-radius: 3px; border: 1px solid var(--sand); background: #fff;
+  .ann-t { padding: 7px 14px; border-radius: 3px; border: 1px solid var(--sand); background: var(--field);
            color: var(--ink); font-size: 12.5px; font-weight: 400; cursor: pointer; }
   .ann-t:hover { border-color: var(--wine); color: var(--wine); }
   .ann-t.on { background: var(--wine); border-color: var(--wine); color: var(--cream); font-weight: 600; }
@@ -240,7 +259,7 @@
   #baseFromBanner img { width: 52px; height: 40px; object-fit: cover; border-radius: 2px;
                         border: 1px solid var(--sand); }
   #baseFromBanner .x { margin-left: auto; cursor: pointer; color: var(--taupe);
-                       border: 1px solid var(--sand); background: #fff; border-radius: 3px;
+                       border: 1px solid var(--sand); background: var(--field); border-radius: 3px;
                        padding: 3px 9px; font-size: 11.5px; }
   #baseFromBanner .x:hover { color: var(--wine); border-color: var(--wine); }
   #historyList { max-height: 320px; overflow-y: auto; }
@@ -255,16 +274,16 @@
                      border: 1px solid var(--sand); cursor: zoom-in; display: block; }
   .hist-thumbs img:hover { border-color: var(--wine); }
   .hist-use { width: 100%; margin-top: 3px; padding: 4px 0; font-size: 11px; font-weight: 400;
-              border: 1px solid var(--sand); background: #fff; color: var(--taupe);
+              border: 1px solid var(--sand); background: var(--field); color: var(--taupe);
               border-radius: 3px; letter-spacing: .5px; }
   .hist-use:hover { color: var(--cream); background: var(--wine); border-color: var(--wine); }
 
   /* 拖拽上传高亮 */
-  .drop.dragover { border-color: var(--wine); color: var(--wine); background: #fff; }
+  .drop.dragover { border-color: var(--wine); color: var(--wine); background: var(--field); }
 
   /* 历史管理：重点条 / 收藏星 / 删除 / 回收站 */
-  .fav-strip { border: 1px solid var(--gold); background: #FBF7EC; border-radius: 4px;
-               padding: 10px 12px; margin-bottom: 12px; }
+  .fav-strip { border: 1px solid rgba(217,164,65,.4); background: rgba(217,164,65,.08);
+               border-radius: 6px; padding: 10px 12px; margin-bottom: 12px; }
   .fav-strip .fav-title { font-size: 12px; color: var(--gold); font-weight: 600;
                           letter-spacing: 1px; margin-bottom: 8px; }
   .fav-thumbs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
@@ -273,7 +292,7 @@
                     border: 1px solid var(--gold); cursor: zoom-in; display: block; }
   .hist-sess { position: relative; }
   .hist-del-sess { position: absolute; right: 0; top: 9px; border: 1px solid var(--sand);
-                   background: #fff; color: var(--taupe); border-radius: 3px; font-size: 11px;
+                   background: var(--field); color: var(--taupe); border-radius: 3px; font-size: 11px;
                    padding: 2px 8px; cursor: pointer; }
   .hist-del-sess:hover { color: var(--brick); border-color: var(--brick); }
   .hist-req { color: var(--ink); font-size: 12px; line-height: 1.55; margin: 2px 0 8px;
@@ -282,13 +301,13 @@
   .hist-thumbs figure { position: relative; }
   .hist-star, .hist-del-img { position: absolute; top: 3px; width: 20px; height: 20px;
     border: 0; border-radius: 50%; cursor: pointer; font-size: 12px; line-height: 20px;
-    padding: 0; text-align: center; background: rgba(255,255,255,.9); }
+    padding: 0; text-align: center; background: rgba(8,7,5,.72); backdrop-filter: blur(2px); }
   .hist-star { left: 3px; color: var(--taupe); }
   .hist-star.on { color: var(--gold); }
   .hist-del-img { right: 3px; color: var(--taupe); }
   .hist-del-img:hover { color: var(--brick); }
   .hist-send { width: 100%; margin-top: 2px; padding: 3px 0; font-size: 10.5px; font-weight: 400;
-               border: 1px solid var(--sand); background: #fff; color: var(--taupe);
+               border: 1px solid var(--sand); background: var(--field); color: var(--taupe);
                border-radius: 3px; }
   .hist-send:hover { color: var(--ink); border-color: var(--ink); background: var(--paper2); }
   #trashPanel { margin-top: 10px; border-top: 1px dashed var(--sand); padding-top: 10px; }
@@ -298,7 +317,7 @@
                     border: 1px solid var(--sand); }
   .trash-item .grow { flex: 1; }
   .trash-item button { font-size: 11px; padding: 3px 9px; border: 1px solid var(--sand);
-                       background: #fff; border-radius: 3px; cursor: pointer; }
+                       background: var(--field); border-radius: 3px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -464,7 +483,7 @@
       <b>🧭 先确认我的理解对不对 <small style="color:var(--taupe);font-weight:400">— 确认后才开始生图，不消耗额度</small></b>
       <div style="font-size:12px;color:var(--taupe);margin:8px 0 4px">我理解你的意思是：</div>
       <div id="understanding" style="font-size:13px;line-height:1.7;color:var(--ink);
-           background:#fff;border:1px solid var(--line);border-radius:6px;padding:10px 12px;
+           background:var(--field);border:1px solid var(--line);border-radius:6px;padding:10px 12px;
            white-space:pre-wrap"></div>
       <label style="margin-top:12px">中文提示词（可直接改，改完点右边按钮让 AI 同步）</label>
       <textarea id="promptZh" style="min-height:140px"></textarea>
@@ -512,7 +531,7 @@
 <div id="lightbox" onclick="this.style.display='none'"><img id="lightboxImg"></div>
 <!-- 需求⑩：每张成图的详细提示词弹层 -->
 <div id="promptModal" onclick="if(event.target===this)this.style.display='none'"
-     style="position:fixed;inset:0;background:rgba(58,53,47,.6);display:none;align-items:center;justify-content:center;z-index:100">
+     style="position:fixed;inset:0;background:rgba(6,5,4,.72);display:none;align-items:center;justify-content:center;z-index:100">
   <div style="background:var(--paper);max-width:640px;width:90%;max-height:80vh;overflow:auto;padding:18px;border-radius:4px;border:1px solid var(--sand)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
       <b style="color:var(--wine)">该图的详细提示词</b>
@@ -1288,6 +1307,18 @@ renderPromptLibrary();
 checkConn();
 loadHistory();
 receiveHandoff();
+
+/* 需求⑥：需求文字自动持久化——刷新/关页/提前结束后不丢，回来还在原处。
+   只在输入框为空时回填，避免覆盖 handoff/储备库注入的内容。 */
+(function persistRequirement(){
+  const el = $("requirement");
+  if (!el) return;
+  try { const saved = localStorage.getItem("arch:requirement");
+        if (saved && !el.value.trim()) el.value = saved; } catch (e) {}
+  el.addEventListener("input", () => {
+    try { localStorage.setItem("arch:requirement", el.value); } catch (e) {}
+  });
+})();
 
 /* ---------------- 局部修改画板 ---------------- */
 let edImg = null, edSource = "", edTool = "brush", strokes = [], drawing = null, erasing = false;

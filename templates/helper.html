@@ -2,20 +2,25 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>提示词助手 · 建筑渲染</title>
 <style>
-  :root{--cream:#EFE8DB;--paper:#FAF6EE;--sand:#D5CBBA;--taupe:#A79C93;--wine:#5B4144;--ink:#48423B;}
+  /* 暗房工作台 · Dark Studio（与主页面同款；变量名沿用，值重映射到暗色） */
+  :root{--cream:#14130F;--paper:#1E1B15;--field:#211E17;--sand:#3B372C;
+        --taupe:#9B9483;--wine:#D9A441;--ink:#EBE6DA;--steel:#29303C;}
   *{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);
-    font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;padding:26px;max-width:900px;margin:0 auto}
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;padding:26px;max-width:900px;margin:0 auto;
+    -webkit-font-smoothing:antialiased}
   h1{font-size:22px;color:var(--wine)} .card{background:var(--paper);border:1px solid var(--sand);
     border-radius:4px;padding:18px;margin-bottom:16px}
-  textarea{width:100%;min-height:80px;border:1px solid var(--sand);border-radius:3px;padding:10px;font:13px/1.6 inherit}
-  .drop{border:1px dashed var(--taupe);border-radius:3px;padding:22px;text-align:center;color:var(--taupe);cursor:pointer;background:#fff}
+  textarea{width:100%;min-height:80px;border:1px solid var(--sand);border-radius:3px;padding:10px;
+    font:13px/1.6 inherit;background:var(--field);color:var(--ink)}
+  textarea:focus{outline:none;border-color:var(--wine)} textarea::placeholder{color:#7C7565}
+  .drop{border:1px dashed var(--taupe);border-radius:3px;padding:22px;text-align:center;color:var(--taupe);cursor:pointer;background:var(--field)}
   .drop.dragover{border-color:var(--wine);color:var(--wine)} .drop img{max-width:220px;max-height:160px;margin-top:10px;border-radius:2px}
   .engine{display:flex;gap:8px;margin-bottom:12px} .engine button{padding:8px 16px;border:1px solid var(--sand);
-    background:#fff;border-radius:999px;cursor:pointer;font-size:13px} .engine button.on{background:var(--wine);color:var(--cream);border-color:var(--wine)}
+    background:var(--field);border-radius:999px;cursor:pointer;font-size:13px} .engine button.on{background:var(--wine);color:var(--cream);border-color:var(--wine)}
   .pills{display:flex;gap:6px;flex-wrap:wrap} .pills label{padding:6px 12px;border:1px solid var(--sand);border-radius:999px;font-size:12px;cursor:pointer}
   .pills input{display:none} .pills input:checked+span{color:var(--wine);font-weight:600}
   button.go{background:var(--wine);color:var(--cream);border:0;border-radius:3px;padding:12px 22px;font-size:14px;cursor:pointer;width:100%}
-  pre{white-space:pre-wrap;background:#fff;border:1px solid var(--sand);border-radius:3px;padding:12px;font-size:12.5px}
+  pre{white-space:pre-wrap;background:var(--field);border:1px solid var(--sand);border-radius:3px;padding:12px;font-size:12.5px}
   .muted{color:var(--taupe);font-size:12px} .hidden{display:none}
 </style></head><body>
 <h1>提示词助手 <span class="muted">— 拖图进来，帮你写出专业提示词</span></h1>
@@ -36,7 +41,7 @@
     <div id="dropPrev"></div>
   </div>
   <div id="descBox" class="muted" style="margin-top:8px"></div>
-  <button id="toRenderBtn" class="go" style="display:none;background:var(--ink);margin-top:10px"
+  <button id="toRenderBtn" class="go" style="display:none;background:var(--steel);margin-top:10px"
           onclick="sendToRender()">→ 把这张图发给渲染器当底图</button>
 </div>
 
@@ -53,7 +58,7 @@
   <div id="understanding" class="muted" style="margin-bottom:10px"></div>
   <label class="muted">中文提示词</label><pre id="zh"></pre>
   <label class="muted">英文提示词（复制这段拿去生图）</label><pre id="en"></pre>
-  <button class="go" onclick="copyEn()" style="background:var(--ink)">📋 复制英文提示词</button>
+  <button class="go" onclick="copyEn()" style="background:var(--steel)">📋 复制英文提示词</button>
   <!-- 需求④：对提示词不满意，可继续沟通、在这版基础上改 -->
   <div style="margin-top:14px;border-top:1px dashed var(--sand);padding-top:12px">
     <label class="muted">不满意？说一句让我改（会在上面这版基础上修订，不推倒重来）</label>
@@ -63,7 +68,7 @@
 </div>
 
 <div id="lightbox" onclick="this.style.display='none'"
-     style="position:fixed;inset:0;background:rgba(58,53,47,.94);display:none;
+     style="position:fixed;inset:0;background:rgba(6,5,4,.9);display:none;
             align-items:center;justify-content:center;z-index:99;cursor:zoom-out">
   <img id="lightboxImg" style="max-width:96vw;max-height:96vh;border-radius:2px"></div>
 
