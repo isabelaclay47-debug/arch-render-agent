@@ -1251,7 +1251,7 @@ def _install_ollama_linux():
 def _start_ollama_serve(exe: str):
     # 注入系统代理：有 VPN/系统代理的用户，serve 拉官方 registry 才能走代理
     # （ollama 是 Go 程序，只认 HTTP(S)_PROXY 环境变量、不读 Windows 注册表系统代理）。
-    kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "env": _proxy_env()}
+    kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "env": _ollama_env()}
     if os.name == "nt":
         kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
     try:
@@ -1276,7 +1276,7 @@ def _run_pull(exe: str, ref: str):
     注入系统代理，让有 VPN 的用户拉官方 registry 也走代理。"""
     proc = subprocess.Popen([exe, "pull", ref], stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1,
-                            encoding="utf-8", errors="replace", env=_proxy_env())
+                            encoding="utf-8", errors="replace", env=_ollama_env())
     last = ""
     for line in proc.stdout:
         line = (line or "").strip()
@@ -1387,6 +1387,20 @@ def _proxy_env() -> dict:
         env["HTTPS_PROXY"] = env["https_proxy"] = https
     if http:
         env["HTTP_PROXY"] = env["http_proxy"] = http
+    # 本地回环永不走代理：否则 VPN 用户的 ollama pull 连本机 11434 会被代理拦掉（EOF）
+    local = "127.0.0.1,localhost,0.0.0.0,::1"
+    existing = env.get("NO_PROXY") or env.get("no_proxy") or ""
+    merged = (existing + "," + local).strip(",") if existing else local
+    env["NO_PROXY"] = env["no_proxy"] = merged
+    return env
+
+
+def _ollama_env() -> dict:
+    """给 ollama serve / pull 子进程的环境：代理设置 + 强制回环地址。
+    OLLAMA_HOST 强制 127.0.0.1:11434，让 serve 绑定处与 pull 客户端目标一致；
+    否则用户机上 serve 绑 127.0.0.1、客户端却从环境继承到 0.0.0.0 → Head 0.0.0.0:11434 EOF。"""
+    env = _proxy_env()
+    env["OLLAMA_HOST"] = "127.0.0.1:11434"
     return env
 
 
