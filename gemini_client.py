@@ -250,7 +250,7 @@ class GeminiClient:
                 editor.click()
                 page.keyboard.insert_text(text)
                 page.wait_for_timeout(500)
-                self._click_send(page)
+                self._click_send(page, before)
                 self._wait_reply_done(page, before, timeout, expect_image)
                 return self.last_reply_text(page)
             except GenCancelled:
@@ -314,15 +314,60 @@ class GeminiClient:
             page.wait_for_timeout(1000)
         raise GeminiError("图片上传后 2 分钟内发送按钮仍不可用，上传可能失败。")
 
-    def _click_send(self, page):
-        btn = page.locator(SEL["send"]).first
+    def _editor_text(self, page) -> str:
         try:
-            if btn.is_visible() and btn.is_enabled():
-                btn.click()
-                return
+            return (page.locator(SEL["editor"]).first.inner_text() or "").strip()
+        except Exception:
+            return ""
+
+    def _submitted(self, page, before_count: int) -> bool:
+        """提示词是否真发出去了：出现停止按钮 / 新回复出现 / 输入框已清空，任一即算。
+        与 ChatGPT 修复 1d0bd5e 同理：过去只点一次不验证，点空了也照样去等回复→无限刷新空等。"""
+        try:
+            if page.locator(SEL["stop"]).first.is_visible():
+                return True
         except Exception:
             pass
-        page.keyboard.press("Enter")          # 兜底
+        try:
+            if page.locator(SEL["assistant"]).count() > before_count:
+                return True
+        except Exception:
+            pass
+        return self._editor_text(page) == ""
+
+    def _click_send(self, page, before_count: int):
+        """发送并**确认发送生效**：点按钮/回车 → 验证；没生效就换招（回车↔再点）重试。
+        真发不出去才抛错让上层自愈——而不是傻等一个从没发出去的回复（#3 发送验证）。"""
+        deadline = time.time() + 15
+        while time.time() < deadline:          # 等发送键从禁用变可用（打字后需一点时间 enable）
+            try:
+                btn = page.locator(SEL["send"]).first
+                if btn.is_visible() and btn.is_enabled():
+                    break
+            except Exception:
+                pass
+            page.wait_for_timeout(300)
+        for _ in range(4):
+            try:
+                btn = page.locator(SEL["send"]).first
+                if btn.is_visible() and btn.is_enabled():
+                    btn.click(timeout=4000)
+                else:
+                    page.locator(SEL["editor"]).first.click()
+                    page.keyboard.press("Enter")
+            except Exception:
+                try:
+                    page.locator(SEL["editor"]).first.click()
+                    page.keyboard.press("Enter")
+                except Exception:
+                    pass
+            vend = time.time() + 4
+            while time.time() < vend:
+                if self._submitted(page, before_count):
+                    return
+                page.wait_for_timeout(400)
+        raise GeminiError(
+            "提示词已输入但多次尝试都没能发送出去（发送按钮点击未生效）。已自动重试。")
 
     RELOAD_INTERVAL = 90
     STUCK_CEILING = 180
