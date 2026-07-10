@@ -1015,8 +1015,12 @@ async function confirmPrompt(adjust) {
 }
 
 async function finishNow() {
-  if (!confirm("确定提前结束吗？将把当前最新一张图输出到桌面。")) return;
-  await fetch("/api/finish_now", { method: "POST" });
+  if (!confirm("确定提前结束吗？将放弃正在生成的这张，把已完成的最新一张图输出到桌面。")) return;
+  const btn = $("finishBtn");           // 立即反馈：别让用户以为没点上（配合后端即时中止 #6b）
+  btn.disabled = true;
+  btn.textContent = "正在结束…";
+  try { await fetch("/api/finish_now", { method: "POST" }); } catch (e) {}
+  // 之后交给 poll 接管：后端 2 秒内中止等待→state 变 done→按钮自动隐藏、成图并入历史
 }
 
 async function nudgeChatGPT() {
@@ -1229,9 +1233,13 @@ async function poll() {
     $("fbCard").style.display = s.state === "waiting_feedback" ? "block" : "none";
     $("clarifyCard").style.display = s.state === "waiting_clarification" ? "block" : "none";
     if (s.state === "waiting_clarification") $("questions").textContent = s.questions || "";
-    $("finishBtn").style.display =
-      ["running","waiting_confirm","waiting_feedback","waiting_clarification","editing","stalled"].includes(s.state)
-        ? "inline-block" : "none";
+    const showFinish =
+      ["running","waiting_confirm","waiting_feedback","waiting_clarification","editing","stalled"].includes(s.state);
+    $("finishBtn").style.display = showFinish ? "inline-block" : "none";
+    if (!showFinish) {                    // 结束/空闲后复位，下个任务按钮是干净的「提前结束」
+      $("finishBtn").disabled = false;
+      $("finishBtn").textContent = "提前结束";
+    }
     $("nudgeBtn").style.display =
       ["connecting","running","editing","stalled"].includes(s.state)
         ? "inline-block" : "none";

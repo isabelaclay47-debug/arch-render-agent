@@ -21,7 +21,7 @@ from playwright.sync_api import sync_playwright
 
 # 复用 chatgpt_client 的 GenStalledError：app.py 用「except GenStalledError」把会话停在
 # 「待重试」而非结束。Gemini 生图卡死也必须命中同一处理，所以两边共用同一个异常类。
-from chatgpt_client import GenStalledError
+from chatgpt_client import GenStalledError, GenCancelled
 
 # 与 chatgpt_client 共用同一个被接管的 Chrome（同端口同 context，各开各的标签）
 CDP_PORT = 9333
@@ -64,10 +64,11 @@ class GeminiClient:
     """只实现「生图角色」需要的接口，与 ChatGPTClient 的 gen 部分同构：
     connect / new_generation_chat / gen_page / send(expect_image) / download_last_image / close。"""
 
-    def __init__(self, cdp_url: str = CDP_URL, log=print, nudge=None):
+    def __init__(self, cdp_url: str = CDP_URL, log=print, nudge=None, cancel=None):
         self.cdp_url = cdp_url
         self.log = log
         self.nudge = nudge          # threading.Event：用户点「人工干预」时置位
+        self.cancel = cancel        # threading.Event：用户点「提前结束」时置位，等待循环即时中止(#6b)
         self._pw = None
         self._browser = None
         self._ctx = None
@@ -239,6 +240,7 @@ class GeminiClient:
         last_err = None
 
         for attempt in range(1, max_attempts + 1):
+            self._raise_if_cancelled()       # 尝试之间也响应提前结束(#6b)
             page = self._current_gen_page()
             try:
                 before = page.locator(SEL["assistant"]).count()
@@ -251,6 +253,8 @@ class GeminiClient:
                 self._click_send(page)
                 self._wait_reply_done(page, before, timeout, expect_image)
                 return self.last_reply_text(page)
+            except GenCancelled:
+                raise                        # 提前结束：不重试、不吞，直接上抛让上层收尾(#6b)
             except GeminiError as e:
                 last_err = e
                 if attempt < max_attempts:
@@ -323,6 +327,11 @@ class GeminiClient:
     RELOAD_INTERVAL = 90
     STUCK_CEILING = 180
 
+    def _raise_if_cancelled(self):
+        """协作式取消(#6b)：用户点「提前结束」→ 立即抛 GenCancelled 中止当前等待。"""
+        if self.cancel is not None and self.cancel.is_set():
+            raise GenCancelled("用户提前结束，已中止当前 Gemini 等待。")
+
     def _wait_reply_done(self, page, before_count: int, timeout: int, expect_image: bool):
         deadline = time.time() + timeout
         last_activity = time.time()
@@ -361,6 +370,7 @@ class GeminiClient:
 
         # 阶段一：等新的模型回复出现
         while time.time() < deadline:
+            self._raise_if_cancelled()   # 用户提前结束 → 立即中止(#6b)
             if page.locator(SEL["assistant"]).count() > before_count:
                 break
             if expect_image and self._last_image_handle(page) is not None:
@@ -379,6 +389,7 @@ class GeminiClient:
         # 阶段二：等生成结束（停止按钮消失并保持消失）
         quiet = 0
         while time.time() < deadline:
+            self._raise_if_cancelled()   # 用户提前结束 → 立即中止(#6b)
             if check_nudge():
                 quiet = 0
             if expect_image and self._last_image_handle(page) is not None:

@@ -6,8 +6,10 @@
   2. _recover_before_retry 在 attempt>=2 时升级到「关掉所有页重开」；
   3. close_all_and_reopen_gen 真的关掉所有旧页并重开干净页。
 """
+import threading
+
 import chatgpt_client as cc
-from chatgpt_client import ChatGPTClient, ChatGPTError
+from chatgpt_client import ChatGPTClient, ChatGPTError, GenCancelled
 
 
 # 共享假时钟：假 page 的 wait_for_timeout 推进它，monkeypatch time.time 读它
@@ -107,3 +109,38 @@ def test_close_all_and_reopen_gen_closes_every_page():
     assert client.director_page not in (old1, old2, old3)
     assert client.gen_page not in (old1, old2, old3)
     assert client.director_page is not client.gen_page
+
+
+# ---------------- #6b 提前结束：协作式取消，立即中止不重试 ----------------
+
+def test_wait_reply_cancels_immediately(monkeypatch):
+    """cancel 事件置位 → _wait_reply_done 立刻抛 GenCancelled，一次刷新都不做。"""
+    monkeypatch.setattr(cc.time, "time", lambda: _now[0])
+    _now[0] = 1000.0
+    cancel = threading.Event()
+    cancel.set()
+    client = ChatGPTClient(log=lambda *a, **k: None, cancel=cancel)
+    page = FakePage()
+    try:
+        client._wait_reply_done(page, before_count=0, timeout=600, expect_image=True)
+        assert False, "cancel 置位时应立即抛 GenCancelled"
+    except GenCancelled:
+        pass
+    assert page.reloads == 0, "提前结束应立即中止，不该再刷新页面"
+
+
+def test_send_does_not_retry_on_cancel():
+    """cancel 置位时 send 直接抛 GenCancelled（而非降级成 GenStalledError 或触发自愈重试）。"""
+    cancel = threading.Event()
+    cancel.set()
+    client = ChatGPTClient(log=lambda *a, **k: None, cancel=cancel)
+    client.gen_page = FakePage()
+    client.director_page = FakePage()
+    recovered = []
+    client._recover_before_retry = lambda *a, **k: recovered.append(1)
+    try:
+        client.send(client.gen_page, "画一张图", expect_image=True)
+        assert False, "cancel 置位时 send 应抛 GenCancelled"
+    except GenCancelled:
+        pass
+    assert recovered == [], "提前结束不应触发任何自愈重试"

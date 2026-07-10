@@ -22,7 +22,8 @@ from flask import Flask, Response, jsonify, render_template, request, send_from_
 from PIL import Image
 
 import prompt_engine as pe
-from chatgpt_client import CDP_PORT, ChatGPTClient, ChatGPTError, GenStalledError
+from chatgpt_client import (CDP_PORT, ChatGPTClient, ChatGPTError,
+                            GenStalledError, GenCancelled)
 from gemini_client import GeminiClient, GeminiError
 
 try:
@@ -359,7 +360,7 @@ def _update_meta(sess_dir: str, **fields):
 
 def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: str,
                 quality: str, ratio: str, review_every: int = DEFAULT_REVIEW_EVERY):
-    client = ChatGPTClient(log=log, nudge=_nudge)
+    client = ChatGPTClient(log=log, nudge=_nudge, cancel=_finish_now)
     engine = get_image_engine()
     gen_client = None          # 生图专用 client；gemini 引擎时才另开，否则复用 ChatGPT
     try:
@@ -370,7 +371,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
         client.connect(director_only=(engine == "gemini"))
         if engine == "gemini":
             log("生图引擎：Gemini（nano-banana）网页驱动；ChatGPT 只做文本推理（理解/提示词/查篡改）。")
-            gen_client = GeminiClient(log=log, nudge=_nudge)
+            gen_client = GeminiClient(log=log, nudge=_nudge, cancel=_finish_now)
             gen_client.connect()
         gen = gen_client if engine == "gemini" else client   # 「生图这只手」用哪个 client
         with _lock:
@@ -625,6 +626,10 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                 try:
                     step_fn()
                     return False
+                except GenCancelled:
+                    # 用户「提前结束」正好卡在生图等待里：丢弃这张、正常收尾（#6b）
+                    log("已提前结束：放弃正在生成的这一张，输出已完成的最后一张成品。")
+                    return True
                 except GenStalledError as e:
                     if auto_retries_left > 0:
                         auto_retries_left -= 1
@@ -735,6 +740,29 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             S["final_path"] = out
         log(f"完成！最终图已放到桌面：{out}")
 
+    except GenCancelled:
+        # 「提前结束」正好卡在文本推理阶段（没被 run_step_with_recovery 兜住）：
+        # 不算错误——有成品就输出最后一张，没有就干净收尾（#6b）。
+        try:
+            if S["items"]:
+                last_img = os.path.join(sess_dir, S["items"][-1]["image"])
+                out = os.path.join(desktop_path(),
+                                   f"渲染结果_{datetime.now().strftime('%m%d_%H%M')}.png")
+                shutil.copyfile(last_img, out)
+                _maybe_enhance(out)
+                with _lock:
+                    S["state"] = "done"
+                    S["final_path"] = out
+                log(f"已提前结束。最终图已放到桌面：{out}")
+            else:
+                with _lock:
+                    S["state"] = "done"
+                log("已提前结束（还没有生成任何图片）。")
+        except Exception as e:
+            with _lock:
+                S["state"] = "error"
+                S["error"] = str(e)
+            log(f"提前结束收尾时出错：{e}")
     except (ChatGPTError, GeminiError) as e:
         with _lock:
             S["state"] = "error"

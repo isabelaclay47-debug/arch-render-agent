@@ -43,10 +43,16 @@ class GenStalledError(ChatGPTError):
     """
 
 
+class GenCancelled(ChatGPTError):
+    """用户点了「提前结束」（#6b）——应**立即**中止当前等待：不重试、不算错误，
+    交由上层正常收尾（输出已完成的最后一张成品）。协作式取消，2 秒内响应。"""
+
+
 class ChatGPTClient:
-    def __init__(self, cdp_url: str = CDP_URL, log=print, nudge=None):
+    def __init__(self, cdp_url: str = CDP_URL, log=print, nudge=None, cancel=None):
         self.cdp_url = cdp_url
         self.log = log
+        self.cancel = cancel  # threading.Event：用户点「提前结束」时置位，等待循环即时中止(#6b)
         self.nudge = nudge  # threading.Event：用户点"人工干预"按钮时置位
         self._pw = None
         self._browser = None
@@ -121,6 +127,12 @@ class ChatGPTClient:
     def _current_page(self, role: str):
         """按角色取当前页（重连后引用会变，始终以 self.* 为准）。"""
         return self.gen_page if role == "gen" else self.director_page
+
+    def _raise_if_cancelled(self):
+        """协作式取消(#6b)：用户点「提前结束」→ 立即抛 GenCancelled 中止当前等待，
+        不重试、不算错误。所有可能长时间阻塞的循环都要调它，才能做到 2 秒内响应。"""
+        if self.cancel is not None and self.cancel.is_set():
+            raise GenCancelled("用户提前结束，已中止当前 ChatGPT 等待。")
 
     def _recover_before_retry(self, role: str, attempt: int, max_attempts: int,
                               expect_image: bool, force_reconnect: bool = False):
@@ -316,6 +328,7 @@ class ChatGPTClient:
         last_err = None
 
         for attempt in range(1, max_attempts + 1):
+            self._raise_if_cancelled()       # 尝试之间也响应提前结束(#6b)
             page = self._current_page(role)  # 重连后引用会变，每次都取最新的
             try:
                 before = page.locator(SEL["assistant"]).count()
@@ -328,6 +341,8 @@ class ChatGPTClient:
                 self._click_send(page, before)
                 self._wait_reply_done(page, before, timeout, expect_image)
                 return self.last_reply_text(page)
+            except GenCancelled:
+                raise                        # 提前结束：不重试、不吞，直接上抛让上层收尾(#6b)
             except ChatGPTError as e:
                 last_err = e
                 if attempt < max_attempts:
@@ -352,6 +367,7 @@ class ChatGPTClient:
         # 等上传处理完：发送按钮从禁用变为可用
         deadline = time.time() + 120
         while time.time() < deadline:
+            self._raise_if_cancelled()   # 上传可能等 2 分钟，也要能被提前结束打断(#6b)
             btn = page.locator(SEL["send"]).first
             try:
                 if btn.is_visible() and btn.is_enabled():
@@ -478,6 +494,7 @@ class ChatGPTClient:
 
         # 阶段一：等新的助手消息出现
         while time.time() < deadline:
+            self._raise_if_cancelled()   # 用户提前结束 → 立即中止(#6b)
             if page.locator(SEL["assistant"]).count() > before_count:
                 break
             if expect_image and self._last_image_handle(page) is not None:
@@ -496,6 +513,7 @@ class ChatGPTClient:
         # 阶段二：等流式输出/生图结束：停止按钮消失并保持消失
         quiet = 0
         while time.time() < deadline:
+            self._raise_if_cancelled()   # 用户提前结束 → 立即中止(#6b)
             if check_nudge():
                 quiet = 0
             if expect_image and self._last_image_handle(page) is not None:
