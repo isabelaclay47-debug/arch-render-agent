@@ -61,6 +61,7 @@ S = {
     "prompt_zh": "",          # 供建筑师阅读/编辑的中文提示词（waiting_confirm 时非空）
     "error": "",
     "final_path": "",
+    "final_enhanced": None,    # 完成时最终图的增强信息 {url, from, to, quality}，供页面展示增强版大图
 }
 _lock = threading.Lock()
 _feedback_event = threading.Event()
@@ -139,6 +140,99 @@ def _maybe_enhance(path: str):
             log(f"（画质增强跳过：{s}）")
     except Exception as e:
         log(f"⚠ 画质增强出错，已保留原图：{e}")
+
+
+def _png_size(path):
+    """快读 PNG 尺寸（W×H 字符串），失败返回空串。只读 24 字节，不解码整图。"""
+    try:
+        import struct
+        with open(path, "rb") as f:
+            f.read(16)
+            w, h = struct.unpack(">II", f.read(8))
+        return f"{w}×{h}"
+    except Exception:
+        return ""
+
+
+def _enhance_to(src: str, dst: str, quality: str, dewm: bool, logfn=None):
+    """把 src 复制到 dst 并**就地增强 dst**（按档位超分/去水印），原图 src 不动。
+    返回 {from, to, skipped}。缺依赖/模型时优雅跳过（dst 保留为原图副本，仍可展示）。"""
+    logfn = logfn or log
+    result = {"from": _png_size(src), "to": "", "skipped": []}
+    try:
+        shutil.copyfile(src, dst)
+    except OSError as e:
+        result["skipped"].append(f"复制失败:{e}")
+        return result
+    try:
+        import image_enhance
+    except Exception as e:
+        result["skipped"].append(f"缺依赖:{e}")
+        return result
+    r = image_enhance.enhance_file(dst, quality=quality, dewatermark_wm=dewm, log=logfn)
+    if r.get("upscaled_to"):
+        result["to"] = r["upscaled_to"].replace("x", "×")
+    result["skipped"] += r.get("skipped", [])
+    return result
+
+
+def _deliver_final(sess_dir: str):
+    """任务收尾：取最后一张成图 → 按当前画质档位增强一份到会话目录（页面可见）→
+    再把增强版复制到桌面。state=done 并把增强信息写进 S，供完成卡在**页面上**展示大图。
+    对应用户诉求：画质增强要在页面上真能看到，而不是只落一个桌面文件。"""
+    if not S["items"]:
+        raise ChatGPTError("任务结束时还没有任何生成图，无图可输出。")
+    sess = os.path.basename(sess_dir.rstrip("/\\"))
+    last = S["items"][-1]["image"]
+    src = os.path.join(sess_dir, last)
+    q = get_quality()
+    dewm = (get_image_engine() == "gemini")
+    enhanced = None
+    deliver_src = src
+    if q != "1k" or dewm:
+        log(f"最终图按 {q.upper()} 画质本地增强中（高档位需数分钟）…")
+        dst = os.path.join(sess_dir, f"final_{q}.png")
+        info = _enhance_to(src, dst, q, dewm)
+        if info.get("to") or (dewm and os.path.isfile(dst)):
+            deliver_src = dst
+            enhanced = {"url": f"/images/{sess}/final_{q}.png",
+                        "from": info.get("from", ""), "to": info.get("to", ""),
+                        "quality": q}
+        for s in info.get("skipped", []):
+            log(f"（画质增强跳过：{s}）")
+    out = os.path.join(desktop_path(),
+                       f"渲染结果_{datetime.now().strftime('%m%d_%H%M')}.png")
+    shutil.copyfile(deliver_src, out)
+    with _lock:
+        S["state"] = "done"
+        S["final_path"] = out
+        S["final_enhanced"] = enhanced
+    tail = f"（已超分 {enhanced['from']} → {enhanced['to']}）" if enhanced and enhanced.get("to") else ""
+    log(f"完成！最终图已放到桌面：{out}{tail}")
+
+
+# ---------------- 单张按需画质增强（页面上「提升并查看」）----------------
+_enh_job = {"active": False, "done": False, "ok": False, "error": "",
+            "url": "", "from": "", "to": "", "key": "", "log": []}
+_enh_lock = threading.Lock()
+
+
+def _enh_log(msg: str):
+    with _enh_lock:
+        _enh_job["log"].append(msg)
+        _enh_job["log"][:] = _enh_job["log"][-20:]
+
+
+def _run_enhance_job(src, dst, url, quality, dewm, key):
+    try:
+        info = _enhance_to(src, dst, quality, dewm, logfn=_enh_log)
+        with _enh_lock:
+            _enh_job.update({"active": False, "done": True, "ok": True, "url": url,
+                             "from": info.get("from", ""), "to": info.get("to", ""),
+                             "key": key})
+    except Exception as e:
+        with _enh_lock:
+            _enh_job.update({"active": False, "done": True, "ok": False, "error": str(e)})
 
 
 def log(msg: str):
@@ -727,37 +821,19 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                     refine_instruction = ""
                 break
 
-        # 输出最终图到桌面
-        if not S["items"]:
-            raise ChatGPTError("任务结束时还没有任何生成图，无图可输出。")
-        last_img = os.path.join(sess_dir, S["items"][-1]["image"])
-        out = os.path.join(desktop_path(),
-                           f"渲染结果_{datetime.now().strftime('%m%d_%H%M')}.png")
-        shutil.copyfile(last_img, out)
-        _maybe_enhance(out)   # 只对最终交付图按画质档位超分/去水印；过程图保持原尺寸不受影响
-        with _lock:
-            S["state"] = "done"
-            S["final_path"] = out
-        log(f"完成！最终图已放到桌面：{out}")
+        # 输出最终图到桌面（按画质档位增强，并在页面完成卡上展示增强版大图）
+        _deliver_final(sess_dir)
 
     except GenCancelled:
         # 「提前结束」正好卡在文本推理阶段（没被 run_step_with_recovery 兜住）：
         # 不算错误——有成品就输出最后一张，没有就干净收尾（#6b）。
         try:
-            if S["items"]:
-                last_img = os.path.join(sess_dir, S["items"][-1]["image"])
-                out = os.path.join(desktop_path(),
-                                   f"渲染结果_{datetime.now().strftime('%m%d_%H%M')}.png")
-                shutil.copyfile(last_img, out)
-                _maybe_enhance(out)
-                with _lock:
-                    S["state"] = "done"
-                    S["final_path"] = out
-                log(f"已提前结束。最终图已放到桌面：{out}")
-            else:
-                with _lock:
-                    S["state"] = "done"
-                log("已提前结束（还没有生成任何图片）。")
+            _deliver_final(sess_dir)
+            log("已提前结束（放弃了正在生成的那张，已交付此前完成的最后一张）。")
+        except ChatGPTError:
+            with _lock:
+                S["state"] = "done"
+            log("已提前结束（还没有生成任何图片）。")
         except Exception as e:
             with _lock:
                 S["state"] = "error"
@@ -833,7 +909,7 @@ def api_start():
         S.update({"state": "connecting", "session_id": sess_id, "iteration": 0,
                   "items": [], "logs": [], "questions": "",
                   "understanding": "", "prompt_zh": "",
-                  "error": "", "final_path": ""})
+                  "error": "", "final_path": "", "final_enhanced": None})
     _feedback_event.clear()
     _confirm_event.clear()
     _finish_now.clear()
@@ -883,6 +959,47 @@ def api_set_quality():
     except ValueError as e:
         return jsonify({"ok": False, "msg": str(e)}), 400
     return jsonify({"ok": True, "quality": q})
+
+
+@app.route("/api/enhance_image", methods=["POST"])
+def api_enhance_image():
+    """页面上「提升画质并查看」：按指定/当前档位，把某张成图本地 AI 超分成一份新文件，
+    返回可在页面直接查看的 URL。已增强过的直接命中缓存秒回；否则异步跑（8K 需数分钟），
+    前端轮询 /api/enhance_status 看进度。对应诉求：画质增强要在页面上真能用、能看到。"""
+    data = request.get_json(silent=True) or {}
+    sess = _safe_name(data.get("session"))
+    image = _safe_name(data.get("image"))
+    q = str(data.get("quality") or get_quality()).strip().lower()   # 只读校验，不改全局档位
+    if q not in _QUALITIES:
+        return jsonify({"ok": False, "msg": f"未知画质档位：{q}"}), 400
+    src = os.path.join(WORKSPACE, sess, image) if (sess and image) else ""
+    if not src or not os.path.isfile(src):
+        return jsonify({"ok": False, "msg": "找不到这张图"}), 400
+    if q == "1k" and get_image_engine() != "gemini":
+        return jsonify({"ok": False, "msg": "当前是 1K 原生档，无需增强；把画质切到 2K/4K/8K 再试"}), 400
+    dst_name = f"_enh_{q}_{image}"
+    dst = os.path.join(WORKSPACE, sess, dst_name)
+    url = f"/images/{sess}/{dst_name}"
+    key = f"{sess}/{image}@{q}"
+    if os.path.isfile(dst):                       # 缓存命中：秒回
+        return jsonify({"ok": True, "cached": True, "url": url,
+                        "from": _png_size(src), "to": _png_size(dst)})
+    with _enh_lock:
+        if _enh_job["active"]:
+            return jsonify({"ok": False, "msg": "已有一张图在增强中，请等它完成再点"}), 409
+        _enh_job.update({"active": True, "done": False, "ok": False, "error": "",
+                         "url": "", "from": _png_size(src), "to": "", "key": key, "log": []})
+    dewm = (get_image_engine() == "gemini")
+    threading.Thread(target=_run_enhance_job,
+                     args=(src, dst, url, q, dewm, key), daemon=True).start()
+    return jsonify({"ok": True, "cached": False, "key": key})
+
+
+@app.route("/api/enhance_status")
+def api_enhance_status():
+    """单张按需增强的进度/结果，供前端轮询。"""
+    with _enh_lock:
+        return jsonify(dict(_enh_job))
 
 
 @app.route("/api/feedback", methods=["POST"])

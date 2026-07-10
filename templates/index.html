@@ -527,6 +527,11 @@
       <div style="font-size:12.5px;color:var(--taupe);margin-top:8px">
         最终图已保存到：<div id="finalPath" style="color:var(--ink);margin-top:4px"></div>
       </div>
+      <div id="doneEnhanced" style="display:none;margin-top:10px">
+        <div id="doneEnhInfo" style="font-size:12.5px;color:var(--wine);margin-bottom:6px"></div>
+        <img id="doneEnhImg" style="max-width:100%;border-radius:8px;cursor:zoom-in"
+             title="点开看增强大图">
+      </div>
     </div>
   </div>
 
@@ -541,7 +546,10 @@
   </div>
 </div>
 
-<div id="lightbox" onclick="this.style.display='none'"><img id="lightboxImg"></div>
+<div id="lightbox" onclick="this.style.display='none'"><img id="lightboxImg">
+  <div id="lightboxCap" style="position:fixed;bottom:18px;left:50%;transform:translateX(-50%);color:#EBE6DA;background:rgba(0,0,0,.55);border:1px solid var(--wine);border-radius:8px;padding:6px 14px;font-size:13px;display:none"></div>
+</div>
+<div id="enhToast" style="display:none;position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:9999;background:var(--paper);color:var(--ink);border:1px solid var(--wine);border-radius:10px;padding:10px 16px;font-size:13px;max-width:70vw;box-shadow:0 8px 30px rgba(0,0,0,.5)"></div>
 <!-- 需求⑩：每张成图的详细提示词弹层 -->
 <div id="promptModal" onclick="if(event.target===this)this.style.display='none'"
      style="position:fixed;inset:0;background:rgba(6,5,4,.72);display:none;align-items:center;justify-content:center;z-index:100">
@@ -629,6 +637,7 @@ async function loadHistory() {
           <button class="hist-use" onclick="useAsBase('${s.session}','${img}')">用作底图</button>
           <button class="hist-send" onclick="sendToHelper('${s.session}','${img}')">→ 发给助手</button>
           <button class="hist-send" onclick="showItemPrompt('${s.session}','${img}')">📄 提示词</button>
+          <button class="hist-send" onclick="enhanceAndView('${s.session}','${img}')">🔍 提升画质</button>
         </figure>`;
       }).join("");
       const when = esc(s.created || s.session);
@@ -1040,7 +1049,50 @@ async function nudgeChatGPT() {
   }
 }
 
-function zoom(src) { $("lightboxImg").src = src; $("lightbox").style.display = "flex"; }
+function zoom(src) {
+  $("lightboxImg").src = src;
+  const cap = $("lightboxCap"); if (cap) cap.style.display = "none";
+  $("lightbox").style.display = "flex";
+}
+
+// 画质增强的进度提示（浮层 toast，无需改 HTML 结构外的东西）
+function enhToast(msg) { const t = $("enhToast"); if (t) { t.textContent = msg; t.style.display = "block"; } }
+function enhToastHide() { const t = $("enhToast"); if (t) t.style.display = "none"; }
+
+function showEnhanced(url, from, to, q) {
+  $("lightboxImg").src = url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();  // 破缓存，确保看到新图
+  const cap = $("lightboxCap");
+  if (cap) { cap.textContent = `已提升到 ${q.toUpperCase()}` + (from && to ? `：${from} → ${to}` : "（原图已够大，做了高质量缩放）");
+             cap.style.display = "block"; }
+  $("lightbox").style.display = "flex";
+}
+
+let _enhPollTimer = null;
+// 页面上按需增强并查看某张成图（画廊 / 历史成图都用它）——对应诉求：画质要在页面上真能用、能看到
+async function enhanceAndView(sess, img) {
+  const q = ($("qualitySel") && $("qualitySel").value) || "1k";
+  if (q === "1k") { alert("当前是 1K 原生档，无需增强。\n把顶栏「画质」切到 2K/4K/8K，再点这个按钮。"); return; }
+  try {
+    const r = await (await fetch("/api/enhance_image", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: sess, image: img, quality: q }) })).json();
+    if (!r.ok) { alert(r.msg || "增强失败"); return; }
+    if (r.cached) { showEnhanced(r.url, r.from, r.to, q); return; }
+    enhToast(`正在按 ${q.toUpperCase()} 本地 AI 超分…（高档位每张需数分钟，别关页面）`);
+    clearInterval(_enhPollTimer);
+    _enhPollTimer = setInterval(async () => {
+      try {
+        const s = await (await fetch("/api/enhance_status")).json();
+        if (s.log && s.log.length) enhToast(`超分中… ${s.log[s.log.length - 1]}`);
+        if (s.done) {
+          clearInterval(_enhPollTimer); enhToastHide();
+          if (s.ok) showEnhanced(s.url, s.from, s.to, q);
+          else alert("增强失败：" + (s.error || "未知错误（可能超分模型未下载）"));
+        }
+      } catch (e) {}
+    }, 1500);
+  } catch (e) { alert("增强失败：" + e.message); }
+}
 
 // 需求⑩：展示某张历史成图各自的详细提示词/分析/结论
 function showItemPrompt(sess, img) {
@@ -1251,6 +1303,14 @@ async function poll() {
     if (s.state === "done") {
       $("doneCard").style.display = "block";
       $("finalPath").textContent = s.final_path;
+      const de = $("doneEnhanced"), fe = s.final_enhanced;
+      if (fe && fe.url) {                        // 在页面上直接展示增强版最终图（不用去桌面找）
+        $("doneEnhInfo").textContent = `已按 ${(fe.quality || "").toUpperCase()} 画质增强` +
+          (fe.from && fe.to ? `：${fe.from} → ${fe.to}` : "");
+        $("doneEnhImg").src = fe.url + "?t=" + (s.session_id || "");
+        $("doneEnhImg").onclick = () => showEnhanced(fe.url, fe.from, fe.to, fe.quality || "");
+        de.style.display = "block";
+      } else { de.style.display = "none"; }
       if (histState !== "done") loadHistory();   // 刚出的新成图并入历史列表
     }
     histState = s.state;
@@ -1283,6 +1343,7 @@ async function poll() {
           <details><summary>本轮${it.kind === "edit" ? "的修改指令" : "后的提示词"}</summary><pre>${esc(it.prompt)}</pre></details>
           <button class="editbtn" onclick="fillFeedback(${rendered})">📋 把这条评价填入点评框</button>
           <button class="editbtn" onclick="openEditor('${it.image}')">🖌 圈选局部修改这张图</button>
+          <button class="editbtn" onclick="enhanceAndView('${sessId}','${it.image}')">🔍 按当前画质提升并查看</button>
         </div>`;
       $("gallery").prepend(div);
     }
@@ -1305,6 +1366,7 @@ async function changeEngine(v) {
 }
 
 async function changeQuality(v) {
+  try { localStorage.setItem("arch:quality", v); } catch (e) {}   // 记住选择，重启服务后不回退成 1K
   try {
     const r = await (await fetch("/api/set_quality", { method: "POST",
       headers: {"Content-Type":"application/json"}, body: JSON.stringify({ quality: v }) })).json();
@@ -1366,6 +1428,22 @@ receiveHandoff();
   el.addEventListener("input", () => {
     try { localStorage.setItem("arch:requirement", el.value); } catch (e) {}
   });
+})();
+
+/* 画质档位持久化：后端每次重启默认回到 1K（超分就不触发了）。这里用 localStorage 记住
+   上次选择，页面加载时回填下拉并推给后端，省得每次手动切、避免"以为设了其实是1K"。 */
+(function persistQuality(){
+  const sel = $("qualitySel");
+  if (!sel) return;
+  try {
+    const saved = localStorage.getItem("arch:quality");
+    if (saved && ["1k","2k","4k","8k"].includes(saved)) {
+      sel.value = saved;
+      if (saved !== "1k")
+        fetch("/api/set_quality", { method:"POST", headers:{"Content-Type":"application/json"},
+                                    body: JSON.stringify({ quality: saved }) }).catch(()=>{});
+    }
+  } catch (e) {}
 })();
 
 /* ---------------- 局部修改画板 ---------------- */
