@@ -138,10 +138,10 @@ class ChatGPTClient:
                 page = self._current_page(role)
         try:
             if role == "gen":
-                # 第一次卡死换新标签救；换标签还不行（attempt>=2）→ 直接另开一个新窗口
-                # （需求：图片卡死、过几分钟干预仍不成功，就直接开新窗户，而不是干等）。
+                # 第一次卡死换新标签救；换标签还不行（attempt>=2）→ 关掉所有页重开
+                # （需求#5：同页无限刷新救不活时，自动关掉所有 ChatGPT 页再开新的，而不是干等/堆标签）。
                 if attempt >= 2:
-                    self.new_generation_window()
+                    self.close_all_and_reopen_gen()
                 else:
                     self.new_generation_chat()  # 生图：换个干净的新对话重发，救活假死的标签
             elif page is not None:
@@ -196,6 +196,32 @@ class ChatGPTClient:
                 old.close()
             except Exception:
                 pass
+
+    def close_all_and_reopen_gen(self):
+        """需求#5：生图反复卡死时的最狠兜底——关掉当前浏览器上下文里**所有** ChatGPT 页，
+        再重开干净的导演页 + 生图页。专治"同一标签无限刷新救不活 / 多个假死标签堆积"的死循环，
+        比"换新标签/新窗口"彻底（那两个会把旧的坏标签留在原地继续堆）。
+        代价：导演对话上下文会重置——但这是死循环下的可接受取舍，功能不中断优先。"""
+        self.log("生图反复卡死——关闭所有 ChatGPT 页、重开干净页面重试（#5 关页重开兜底）…")
+        try:
+            pages = list(self._ctx.pages)
+        except Exception:
+            self._reconnect()   # 上下文都没了 → 整体重连
+            return
+        for p in pages:
+            try:
+                p.close()
+            except Exception:
+                pass
+        try:
+            self.director_page = self._ctx.new_page()
+            self._open_chat(self.director_page)
+            if not self._director_only:
+                self.gen_page = self._ctx.new_page()
+                self._open_chat(self.gen_page)
+        except Exception as e:
+            self.log(f"关页后重开失败（{str(e)[:70]}），改为整体重连。")
+            self._reconnect()
 
     def _alive_opener(self):
         """找一个还活着的页面当 window.open 的发起者；都死了返回 None。"""
@@ -395,11 +421,14 @@ class ChatGPTClient:
     RELOAD_INTERVAL = 90   # 页面无动静（非流式）超过这个秒数就自动刷新（ChatGPT 网页时不时假死）
     STUCK_CEILING = 180    # 生图即使一直显示"生成中"，超过这个秒数仍没出图也强制刷新一次——
                            # 破解"页面一直转圈假思考、自动刷新永不触发"导致干等到总超时的假死。
+    AUTO_RELOAD_CAP = 1    # 同一坏死标签最多"就地自动刷新"这么多次；再卡就升级为「关掉所有页重开」(#5)——
+                           # 破解"对中毒标签每 90s 刷一次、磨完 600s 才升级"造成的无限刷新死循环。
 
     def _wait_reply_done(self, page, before_count: int, timeout: int, expect_image: bool):
         deadline = time.time() + timeout
         last_activity = time.time()
         last_reload = time.time()   # 上次刷新/本步开始的时刻；**不被流式指示重置**，专供强制上限用
+        auto_reloads = 0            # 自动"卡死刷新"次数；超过 AUTO_RELOAD_CAP 就抛错让上层关页重开(#5)
 
         def reload_page(reason: str):
             nonlocal last_activity, last_reload
@@ -412,18 +441,31 @@ class ChatGPTClient:
             last_activity = time.time()
             last_reload = time.time()
 
+        def stuck_escalate(reason: str):
+            """自动卡死兜底：同一坏死标签先就地刷新一次；再卡（超过 AUTO_RELOAD_CAP）就抛错，
+            让上层 send() 走到「关掉所有 ChatGPT 页重开」(#5)，而不是对中毒标签无限刷新。"""
+            nonlocal auto_reloads
+            if auto_reloads >= self.AUTO_RELOAD_CAP:
+                raise ChatGPTError(
+                    f"{reason}：同页自动刷新 {auto_reloads} 次仍无进展，需关闭所有 ChatGPT 页重开。")
+            auto_reloads += 1
+            reload_page(reason)
+
         def force_ceiling() -> bool:
-            """生图即使页面一直"生成中"，超过 STUCK_CEILING 秒仍没出图就强制刷新一次。
+            """生图即使页面一直"生成中"，超过 STUCK_CEILING 秒仍没出图就强制干预一次。
             这条不看 is_streaming（转圈也照样干预），是真正的"卡死自动干预"兜底。"""
             if (expect_image and self._last_image_handle(page) is None
                     and time.time() - last_reload > self.STUCK_CEILING):
-                reload_page(f"生图已超过 {self.STUCK_CEILING}s 仍未出图，强制刷新排除页面假死")
+                stuck_escalate(f"生图已超过 {self.STUCK_CEILING}s 仍未出图，排除页面假死")
                 return True
             return False
 
         def check_nudge() -> bool:
+            # 人工干预=用户给了一次全新机会：重置自动刷新计数，只就地刷新、不升级
+            nonlocal auto_reloads
             if self.nudge and self.nudge.is_set():
                 self.nudge.clear()
+                auto_reloads = 0
                 reload_page("收到人工干预信号")
                 return True
             return False
@@ -444,7 +486,7 @@ class ChatGPTClient:
                 last_activity = time.time()  # 在思考/输出中，不算卡死
             check_nudge()
             if time.time() - last_activity > self.RELOAD_INTERVAL:
-                reload_page("回复迟迟未出现，页面可能卡住")
+                stuck_escalate("回复迟迟未出现，页面可能卡住")
             else:
                 force_ceiling()   # 生图转圈假死的强制上限（不看 is_streaming）
             page.wait_for_timeout(1000)
@@ -469,7 +511,7 @@ class ChatGPTClient:
                         return
                     # 输出停了却没有图——典型的网页假死，刷新一下图往往就出来了
                     if time.time() - last_activity > self.RELOAD_INTERVAL:
-                        reload_page("生成似乎结束但图片没出现，页面可能假死")
+                        stuck_escalate("生成似乎结束但图片没出现，页面可能假死")
                         quiet = 0
             if force_ceiling():   # 一直"生成中"转圈也照样兜底强制刷新
                 quiet = 0
