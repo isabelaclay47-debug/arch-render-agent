@@ -615,7 +615,8 @@ async function loadHistory() {
       return;
     }
     window._histMeta = {};   // 需求⑩：缓存每张成图各自的提示词元数据，供逐图查看
-    sessions.forEach(s => { window._histMeta[s.session] = s.item_meta || {}; });
+    window._histSess = {};   // 会话级信息（初始命令 + 最后一版提示词），旧图无逐图数据时兜底展示
+    sessions.forEach(s => { window._histMeta[s.session] = s.item_meta || {}; window._histSess[s.session] = s; });
     box.innerHTML = sessions.map(s => {
       const favSet = new Set(s.favorites || []);
       const thumbs = s.images.map(img => {
@@ -1041,14 +1042,25 @@ function zoom(src) { $("lightboxImg").src = src; $("lightbox").style.display = "
 function showItemPrompt(sess, img) {
   const meta = (window._histMeta && window._histMeta[sess] && window._histMeta[sess][img]) || null;
   const body = $("promptModalBody");
-  if (!meta || (!meta.prompt && !meta.analysis && !meta.verdict)) {
-    body.innerHTML = `<div style="color:var(--taupe);font-size:13px">这张图没有留存详细提示词（多半是更新此功能前生成的旧图）。</div>`;
-  } else {
-    const h = t => `<div style="color:var(--wine);font-weight:600;margin:10px 0 3px">${t}</div>`;
+  const h = t => `<div style="color:var(--wine);font-weight:600;margin:10px 0 3px">${t}</div>`;
+  if (meta && (meta.prompt || meta.analysis || meta.verdict)) {
     body.innerHTML =
       h(meta.kind === "edit" ? "局部修改指令" : "本轮提示词") + `<pre>${esc(meta.prompt || "（无）")}</pre>` +
       (meta.verdict ? h("结论") + `<pre>${esc(meta.verdict)}</pre>` : "") +
       (meta.analysis ? h("篡改检查明细") + `<pre>${esc(meta.analysis)}</pre>` : "");
+  } else {
+    // 兜底：旧图没留存逐图提示词 → 退回展示该会话的初始命令 + 最后一版提示词，别让按钮成死路
+    const s = (window._histSess && window._histSess[sess]) || null;
+    const en = s && s.last_prompt_en, zh = s && s.last_prompt_zh, req = s && s.requirement;
+    if (req || en || zh) {
+      body.innerHTML =
+        `<div style="color:var(--taupe);font-size:12px;margin-bottom:6px">⚠ 此图生成早于"逐图提示词"功能，无法精确到这一张；下面是该会话保留的提示词，供参考。</div>` +
+        (req ? h("建筑师初始命令") + `<pre>${esc(req)}</pre>` : "") +
+        (zh ? h("最后一版提示词（中文）") + `<pre>${esc(zh)}</pre>` : "") +
+        (en ? h("最后一版提示词（EN）") + `<pre>${esc(en)}</pre>` : "");
+    } else {
+      body.innerHTML = `<div style="color:var(--taupe);font-size:13px">这张图没有留存任何提示词（更新此功能前生成的旧图，且会话级提示词也未保存）。</div>`;
+    }
   }
   $("promptModal").style.display = "flex";
 }
