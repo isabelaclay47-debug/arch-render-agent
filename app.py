@@ -96,6 +96,47 @@ def set_image_engine(name: str) -> str:
     return name
 
 
+# Gemini 生图模型（引擎=gemini 时才用）。用户在 gemini.google.com 有多个模型可选，
+# 图像生成默认走 nano-banana=「Gemini 2.5 Flash Image」。选中的模型会在开对话后由
+# GeminiClient.select_model() 尝试在网页上切换；DOM 变动/找不到时优雅指示用户手动切。
+_GEMINI_MODELS = (
+    "Gemini 2.5 Flash Image",   # nano-banana，默认图像生成模型
+    "Gemini 2.5 Flash",
+    "Gemini 2.5 Pro",
+)
+_gemini_model = os.environ.get("ARA_GEMINI_MODEL", _GEMINI_MODELS[0]).strip()
+
+
+def _canon_gemini_model(m: str):
+    """大小写/空白无关地匹配到 _GEMINI_MODELS 里的规范写法；匹配不到返回 None。"""
+    key = str(m or "").strip().lower()
+    for name in _GEMINI_MODELS:
+        if name.lower() == key:
+            return name
+    return None
+
+
+if _canon_gemini_model(_gemini_model) is None:
+    _gemini_model = _GEMINI_MODELS[0]
+else:
+    _gemini_model = _canon_gemini_model(_gemini_model)
+
+
+def get_gemini_model() -> str:
+    with _lock:
+        return _gemini_model
+
+
+def set_gemini_model(m: str) -> str:
+    global _gemini_model
+    canon = _canon_gemini_model(m)
+    if canon is None:
+        raise ValueError(f"未知 Gemini 模型：{m}（可选 {' / '.join(_GEMINI_MODELS)}）")
+    with _lock:
+        _gemini_model = canon
+    return canon
+
+
 # 画质档位（需求：本地 AI 超分到 1K/2K/4K/8K；gemini 引擎顺带去水印）。默认 1k=原生不放大。
 _QUALITIES = ("1k", "2k", "4k", "8k")
 _quality = os.environ.get("ARA_QUALITY", "1k").strip().lower()
@@ -465,7 +506,8 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
         client.connect(director_only=(engine == "gemini"))
         if engine == "gemini":
             log("生图引擎：Gemini（nano-banana）网页驱动；ChatGPT 只做文本推理（理解/提示词/查篡改）。")
-            gen_client = GeminiClient(log=log, nudge=_nudge, cancel=_finish_now)
+            gen_client = GeminiClient(log=log, nudge=_nudge, cancel=_finish_now,
+                                      model=get_gemini_model())
             gen_client.connect()
         gen = gen_client if engine == "gemini" else client   # 「生图这只手」用哪个 client
         with _lock:
@@ -935,6 +977,8 @@ def api_status():
         data = dict(S)
         data["image_engine"] = _image_engine   # 当前生图引擎，供前端切换开关回显
         data["quality"] = _quality             # 当前画质档位，供前端下拉回显
+        data["gemini_model"] = _gemini_model   # 当前 Gemini 生图模型，引擎=gemini 时前端下拉回显
+        data["gemini_models"] = list(_GEMINI_MODELS)  # 可选模型清单，供前端渲染下拉
     return jsonify(data)
 
 
@@ -949,6 +993,19 @@ def api_set_engine():
     except ValueError as e:
         return jsonify({"ok": False, "msg": str(e)}), 400
     return jsonify({"ok": True, "engine": name})
+
+
+@app.route("/api/set_gemini_model", methods=["POST"])
+def api_set_gemini_model():
+    """切换 Gemini 生图模型（引擎=gemini 时用）。任务运行中不许切——本轮连接已建立。
+    下次「开始渲染」时由 GeminiClient.select_model() 在网页上尝试切换。"""
+    if S["state"] not in ("idle", "done", "error"):
+        return jsonify({"ok": False, "msg": "任务进行中不能切换模型，请等本次结束或先结束任务"}), 400
+    try:
+        m = set_gemini_model((request.get_json(silent=True) or {}).get("model"))
+    except ValueError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 400
+    return jsonify({"ok": True, "model": m})
 
 
 @app.route("/api/set_quality", methods=["POST"])

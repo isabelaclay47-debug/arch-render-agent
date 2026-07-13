@@ -347,6 +347,11 @@
         <option value="gemini">Gemini · nano-banana</option>
       </select>
     </label>
+    <label class="btn-ghost" id="geminiModelWrap" style="display:none;align-items:center;gap:6px;cursor:pointer"
+           title="Gemini 用哪个生图模型（登录后自动切到该模型再跑；若网页版式变动切不了，会提示你在 Gemini 页面手动切一次）。任务进行中不可切，下次「开始渲染」生效。">
+      Gemini 模型
+      <select id="geminiModelSel" onchange="changeGeminiModel(this.value)" style="font:inherit;padding:2px 4px"></select>
+    </label>
     <label class="btn-ghost" style="display:flex;align-items:center;gap:6px;cursor:pointer"
            title="最终输出图的画质：本地 AI 超分（Swin2SR），离线免账号。1K=原生不放大；2K/4K/8K 会在出图后本地放大补细节（高档位需数分钟）。只增强最终交付图，不影响过程与生图速度。">
       画质
@@ -1267,6 +1272,8 @@ async function poll() {
     // 画质档位：随时可改（逐图后处理），只回显、不禁用
     const qSel = $("qualitySel");
     if (qSel && s.quality && document.activeElement !== qSel) qSel.value = s.quality;
+    // Gemini 模型下拉：引擎=gemini 时显示，填充清单、回显、运行中禁用
+    syncGeminiModels(s);
 
     // 确认关卡：进入时填一次（后续轮询不覆盖你正在编辑的内容）
     if (s.state === "waiting_confirm") {
@@ -1359,10 +1366,39 @@ async function changeEngine(v) {
       headers: {"Content-Type":"application/json"}, body: JSON.stringify({ engine: v }) })).json();
     if (!r.ok) { alert(r.msg || "切换失败"); }
     else if (v === "gemini") {
-      alert("已切到 Gemini（nano-banana）生图。\n请确认专用 Chrome 里已登录 gemini.google.com，"
-          + "并把对话切到 nano-banana 生图模型。下次「开始渲染」生效。");
+      alert("已切到 Gemini 生图。\n请确认专用 Chrome 里已登录 gemini.google.com。"
+          + "\n在下面「Gemini 模型」下拉里选生图模型即可，开始渲染后会自动切到它。下次「开始渲染」生效。");
     }
+    // 引擎变了立即显隐 Gemini 模型下拉（不必等下一次轮询）
+    const gw = $("geminiModelWrap"); if (gw) gw.style.display = (v === "gemini") ? "flex" : "none";
   } catch (e) { alert("切换失败：" + e.message); }
+}
+
+async function changeGeminiModel(v) {
+  try { localStorage.setItem("arch:gemini_model", v); } catch (e) {}   // 记住选择，重启不丢
+  try {
+    const r = await (await fetch("/api/set_gemini_model", { method: "POST",
+      headers: {"Content-Type":"application/json"}, body: JSON.stringify({ model: v }) })).json();
+    if (!r.ok) { alert(r.msg || "切换模型失败"); }
+  } catch (e) { alert("切换模型失败：" + e.message); }
+}
+
+// 用 status 回传的模型清单填充下拉（只填一次），并回显当前选中/上次记住的模型
+function syncGeminiModels(s) {
+  const wrap = $("geminiModelWrap"), sel = $("geminiModelSel");
+  if (!wrap || !sel) return;
+  wrap.style.display = (s.image_engine === "gemini") ? "flex" : "none";
+  const models = s.gemini_models || [];
+  if (models.length && sel.options.length !== models.length) {
+    sel.innerHTML = models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
+    let want = null;
+    try { want = localStorage.getItem("arch:gemini_model"); } catch (e) {}
+    if (want && models.includes(want) && want !== s.gemini_model) {
+      changeGeminiModel(want);            // 用本地记住的模型覆盖服务端默认
+    }
+  }
+  if (s.gemini_model && document.activeElement !== sel) sel.value = s.gemini_model;
+  sel.disabled = !["idle", "done", "error"].includes(s.state);
 }
 
 async function changeQuality(v) {

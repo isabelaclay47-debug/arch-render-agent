@@ -50,6 +50,10 @@ SEL = {
                    'button:has-text("上传图片")',
     # 传图 input（点了上传后才出现/可用）
     "file_input": 'input[type="file"]',
+    # 模型选择器入口（待真机校准）：Gemini 顶栏的模型切换按钮，点开后出模型菜单
+    "model_switcher": 'button[aria-label*="模型"], button[aria-label*="切换模型"], '
+                      'button[aria-label*="model" i], bard-mode-switcher button, '
+                      '.gds-mode-switch-button, .logo-pill-btn',
 }
 
 TEXT_TIMEOUT = 300
@@ -64,11 +68,12 @@ class GeminiClient:
     """只实现「生图角色」需要的接口，与 ChatGPTClient 的 gen 部分同构：
     connect / new_generation_chat / gen_page / send(expect_image) / download_last_image / close。"""
 
-    def __init__(self, cdp_url: str = CDP_URL, log=print, nudge=None, cancel=None):
+    def __init__(self, cdp_url: str = CDP_URL, log=print, nudge=None, cancel=None, model=None):
         self.cdp_url = cdp_url
         self.log = log
         self.nudge = nudge          # threading.Event：用户点「人工干预」时置位
         self.cancel = cancel        # threading.Event：用户点「提前结束」时置位，等待循环即时中止(#6b)
+        self.model = (model or "").strip() or None   # 用户选的 Gemini 生图模型，None=用页面当前默认
         self._pw = None
         self._browser = None
         self._ctx = None
@@ -90,11 +95,60 @@ class GeminiClient:
         self.gen_page = self._ctx.new_page()
         self._open_chat(self.gen_page)
         self._check_logged_in(self.gen_page)
+        self.select_model(self.gen_page)
         self.log("已接管 Chrome，Gemini（nano-banana）登录状态正常，用于生图。")
 
     def _open_chat(self, page):
         page.goto(GEMINI_URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(2500)
+
+    def select_model(self, page):
+        """尽力把 Gemini 网页切到用户选的生图模型（self.model）。best-effort：
+        找不到模型选择器或菜单项时**不报错**，只 log 明确指示用户手动切——这样即便
+        Gemini 改版 DOM，功能也不是摆设（用户知道该做什么）。返回 True=已点选/无需切。"""
+        if not self.model:
+            return True
+        try:
+            # 已在目标模型？菜单入口文本常含当前模型名，含目标名就当已选中
+            try:
+                switcher = page.query_selector(SEL["model_switcher"])
+                if switcher and self.model.lower() in (switcher.inner_text() or "").lower():
+                    self.log(f"Gemini 已是「{self.model}」，无需切换。")
+                    return True
+            except Exception:
+                switcher = None
+            if not switcher:
+                self.log(f"没找到 Gemini 模型切换按钮——请在 Gemini 页面顶部手动切到「{self.model}」再继续。")
+                return False
+            switcher.click()
+            page.wait_for_timeout(800)
+            # 菜单里点包含目标模型名的项（宽松：短名如「2.5 Flash Image」也命中）
+            short = self.model.replace("Gemini", "").strip()
+            item = None
+            for txt in (self.model, short):
+                try:
+                    item = page.query_selector(
+                        f'[role="menuitem"]:has-text("{txt}"), button:has-text("{txt}"), '
+                        f'[role="option"]:has-text("{txt}")')
+                except Exception:
+                    item = None
+                if item:
+                    break
+            if item:
+                item.click()
+                page.wait_for_timeout(1200)
+                self.log(f"已在 Gemini 网页切到模型「{self.model}」。")
+                return True
+            # 展开了菜单但没匹配到项：收起菜单，指示手动
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+            self.log(f"Gemini 模型菜单里没找到「{self.model}」——请手动在页面上切换该模型。")
+            return False
+        except Exception as e:
+            self.log(f"切换 Gemini 模型时出错（{str(e)[:60]}）——请手动切到「{self.model}」，不影响其它功能。")
+            return False
 
     def _check_logged_in(self, page):
         try:
@@ -127,12 +181,14 @@ class GeminiClient:
         self._ctx = self._browser.contexts[0]
         self.gen_page = self._ctx.new_page()
         self._open_chat(self.gen_page)
+        self.select_model(self.gen_page)
         self.log("已重连 Gemini，继续任务。")
 
     def new_generation_chat(self):
         """每轮生成换一个全新标签页再导航——旧标签生成几次后网页常假死/连接重置，换新标签最干净。"""
         old = self.gen_page
         self.gen_page = self._open_fresh_gen_chat()
+        self.select_model(self.gen_page)
         if old is not None and old is not self.gen_page:
             try:
                 old.close()
@@ -145,6 +201,7 @@ class GeminiClient:
         self.log("换新标签仍未出图，改为**另开一个新窗口**重试…")
         old = self.gen_page
         self.gen_page = self._open_fresh_gen_window()
+        self.select_model(self.gen_page)
         if old is not None and old is not self.gen_page:
             try:
                 old.close()
