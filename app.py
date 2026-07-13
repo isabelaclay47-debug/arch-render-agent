@@ -144,9 +144,12 @@ def set_image_engine(name: str) -> str:
 # Gemini 生图模型（引擎=gemini 时才用）。用户在 gemini.google.com 有多个模型可选，
 # 图像生成默认走 nano-banana=「Gemini 2.5 Flash Image」。选中的模型会在开对话后由
 # GeminiClient.select_model() 尝试在网页上切换；DOM 变动/找不到时优雅指示用户手动切。
+# 网页版 Gemini 实际模型名（2026-07 真机截图校准；随 Google 改版可能再变）。
+# 出图（nano-banana）跑在 Flash 上，「3.5 Flash」是默认且全能项 → 出图就用它。
 _GEMINI_MODELS = (
-    "2.5 Flash",   # = nano-banana 出图模型；网页版 Gemini 默认，出图就用它（推荐）
-    "2.5 Pro",     # 推理/思考模型，出图能力弱于 Flash，一般不用来出图
+    "3.5 Flash",       # 全方位帮助，默认；出图就用它（推荐）
+    "3.1 Flash-Lite",  # 极速回答
+    "3.1 Pro",         # 高等数学与代码（推理向，出图弱）
 )
 _gemini_model = os.environ.get("ARA_GEMINI_MODEL", _GEMINI_MODELS[0]).strip()
 

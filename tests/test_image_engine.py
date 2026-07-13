@@ -24,9 +24,9 @@ def test_set_engine_gemini_and_back():
 def test_gemini_model_is_configurable_and_exposed_in_status():
     old = appmod.get_gemini_model()
     try:
-        assert appmod.set_gemini_model("2.5 Flash") == "2.5 Flash"
+        assert appmod.set_gemini_model("3.5 Flash") == "3.5 Flash"
         data = client().get("/api/status").get_json()
-        assert data["gemini_model"] == "2.5 Flash"
+        assert data["gemini_model"] == "3.5 Flash"
     finally:
         appmod.set_gemini_model(old)
 
@@ -94,7 +94,7 @@ def test_set_gemini_model_rejects_unknown():
 def test_set_gemini_model_endpoint_blocked_while_running():
     appmod.S["state"] = "running"
     try:
-        r = client().post("/api/set_gemini_model", json={"model": "2.5 Pro"})
+        r = client().post("/api/set_gemini_model", json={"model": "3.1 Pro"})
         assert r.status_code == 400
     finally:
         appmod.S["state"] = "idle"
@@ -156,22 +156,22 @@ def test_select_model_noop_when_unset():
 
 
 def test_select_model_missing_switcher_instructs_manual():
-    c, logs = _gc("2.5 Pro")
+    c, logs = _gc("3.1 Pro")
     ok = c.select_model(_FakePage(switcher=None))
     assert ok is False                           # 找不到入口 → 不崩、返回 False
     assert any("手动" in m for m in logs)         # 明确指示用户手动切，不是摆设
 
 
 def test_select_model_clicks_matching_menu_item():
-    c, logs = _gc("2.5 Pro")
-    switcher = _FakeEl(text="2.5 Flash")   # 当前是别的模型
-    item = _FakeEl(text="2.5 Pro")
+    c, logs = _gc("3.1 Pro")
+    switcher = _FakeEl(text="3.5 Flash")   # 当前是别的模型
+    item = _FakeEl(text="3.1 Pro")
     ok = c.select_model(_FakePage(switcher=switcher, item=item))
     assert ok is True and item.clicked and switcher.clicked
 
 
 def test_select_model_already_selected_skips():
-    c, logs = _gc("2.5 Pro")
-    switcher = _FakeEl(text="2.5 Pro")     # 入口文本已含目标模型
+    c, logs = _gc("3.1 Pro")
+    switcher = _FakeEl(text="3.1 Pro")     # 入口文本已含目标模型
     ok = c.select_model(_FakePage(switcher=switcher, item=None))
     assert ok is True and switcher.clicked is False   # 已是目标 → 不点
