@@ -54,6 +54,46 @@ def all_ready(need_lama=True):
     return model_ready("swin2sr_x4") and (model_ready("lama") if need_lama else True)
 
 
+_download_lock = threading.Lock()
+
+
+def _ensure_model(key, log=print):
+    """模型缺失/不完整时，从 MODELS[key]['urls'] 逐源下载到 models/（原子写入 .part→rename）。
+    已就绪直接返回 True。**让别人 clone 仓库后首次用超分/去水印能自动补齐**——模型太大不进
+    git（gitignore），靠这里按需下载。hf-mirror 国内友好源在前、huggingface 兜底。"""
+    if model_ready(key):
+        return True
+    import shutil
+    import urllib.request
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    dst = _model_path(key)
+    with _download_lock:
+        if model_ready(key):                 # 双检锁：并发首用时只下一次
+            return True
+        mb = MODELS[key]["size"] // 1024 // 1024
+        for url in MODELS[key]["urls"]:
+            tmp = dst + ".part"
+            try:
+                log(f"首次使用：正在下载模型 {MODELS[key]['file']}（约 {mb}MB，一次性，请稍候）…")
+                req = urllib.request.Request(url, headers={"User-Agent": "ara/1.0"})
+                with urllib.request.urlopen(req, timeout=600) as r, open(tmp, "wb") as f:
+                    shutil.copyfileobj(r, f)
+                if os.path.getsize(tmp) >= MODELS[key]["size"] * 0.9:
+                    os.replace(tmp, dst)
+                    log(f"模型 {MODELS[key]['file']} 下载完成，就绪。")
+                    return True
+                os.remove(tmp)
+                log("下载不完整，换下一个源…")
+            except Exception as e:
+                log(f"该源下载失败（{str(e)[:60]}），换下一个源…")
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+        log(f"模型 {MODELS[key]['file']} 所有源都下载失败，该功能本次跳过（可稍后重试或手动放入 models/）。")
+        return False
+
+
 def _session(key):
     import onnxruntime as ort
     with _load_lock:
@@ -200,23 +240,23 @@ def enhance_file(path, quality="1k", dewatermark_wm=False, log=print):
         return result
 
     if dewatermark_wm:
-        if model_ready("lama"):
+        if _ensure_model("lama", log):       # 缺则自动下载，让新部署也能用
             try:
                 img = dewatermark(img, log=log); result["dewatermark"] = True
             except Exception as e:
                 result["skipped"].append(f"去水印失败:{e}")
         else:
-            result["skipped"].append("去水印模型未下载")
+            result["skipped"].append("去水印模型未就绪(自动下载失败)")
 
     if target:
-        if model_ready("swin2sr_x4"):
+        if _ensure_model("swin2sr_x4", log):
             try:
                 img = upscale(img, target, log=log)
                 result["upscaled_to"] = f"{img.shape[1]}x{img.shape[0]}"
             except Exception as e:
                 result["skipped"].append(f"超分失败:{e}")
         else:
-            result["skipped"].append("超分模型未下载")
+            result["skipped"].append("超分模型未就绪(自动下载失败)")
 
     cv2.imwrite(path, img)
     return result
