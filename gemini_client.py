@@ -50,10 +50,11 @@ SEL = {
                    'button:has-text("上传图片")',
     # 传图 input（点了上传后才出现/可用）
     "file_input": 'input[type="file"]',
-    # 模型选择器入口（待真机校准）：Gemini 顶栏的模型切换按钮，点开后出模型菜单
-    "model_switcher": 'button[aria-label*="模型"], button[aria-label*="切换模型"], '
-                      'button[aria-label*="model" i], bard-mode-switcher button, '
-                      '.gds-mode-switch-button, .logo-pill-btn',
+    # 模型选择器入口（已按真机截图校准）：模型开关在**输入框内右侧**，是一个显示当前
+    # 模型名（如「Flash」/「Pro」）+ 下拉箭头的按钮，点开后出模型菜单。不在顶栏。
+    "model_switcher": 'button:has-text("Flash"), button:has-text("Pro"), '
+                      'button:has-text("Thinking"), [role="button"]:has-text("Flash"), '
+                      'button[aria-label*="模型"], button[aria-label*="model" i]',
 }
 
 TEXT_TIMEOUT = 300
@@ -112,24 +113,25 @@ class GeminiClient:
         Gemini 改版 DOM，功能也不是摆设（用户知道该做什么）。返回 True=已点选/无需切。"""
         if not self.model:
             return True
+        # 区分词：模型开关按钮只显示「Flash」/「Pro」这类短词，用它判断当前/匹配菜单项
+        key = self.model.split()[-1]          # "2.5 Flash" -> "Flash"；"2.5 Pro" -> "Pro"
         try:
-            # 已在目标模型？菜单入口文本常含当前模型名，含目标名就当已选中
+            # 已在目标模型？输入框里的模型按钮文本含区分词就当已选中（默认 Flash 时零操作）
             try:
                 switcher = page.query_selector(SEL["model_switcher"])
-                if switcher and self.model.lower() in (switcher.inner_text() or "").lower():
+                if switcher and key.lower() in (switcher.inner_text() or "").lower():
                     self.log(f"Gemini 已是「{self.model}」，无需切换。")
                     return True
             except Exception:
                 switcher = None
             if not switcher:
-                self.log(f"没找到 Gemini 模型切换按钮——请在 Gemini 页面顶部手动切到「{self.model}」再继续。")
+                self.log(f"没找到 Gemini 模型切换按钮——请在输入框右侧的模型按钮手动切到「{self.model}」再继续。")
                 return False
             switcher.click()
             page.wait_for_timeout(800)
-            # 菜单里点包含目标模型名的项（宽松：短名如「2.5 Flash Image」也命中）
-            short = self.model.replace("Gemini", "").strip()
+            # 菜单里点包含目标模型名/区分词的项（"2.5 Flash" 或 "Flash" 任一命中）
             item = None
-            for txt in (self.model, short):
+            for txt in (self.model, key):
                 try:
                     item = page.query_selector(
                         f'[role="menuitem"]:has-text("{txt}"), button:has-text("{txt}"), '
@@ -148,7 +150,7 @@ class GeminiClient:
                 page.keyboard.press("Escape")
             except Exception:
                 pass
-            self.log(f"Gemini 模型菜单里没找到「{self.model}」——请手动在页面上切换该模型。")
+            self.log(f"Gemini 模型菜单里没找到「{self.model}」——请在输入框右侧的模型按钮手动切换。")
             return False
         except Exception as e:
             self.log(f"切换 Gemini 模型时出错（{str(e)[:60]}）——请手动切到「{self.model}」，不影响其它功能。")

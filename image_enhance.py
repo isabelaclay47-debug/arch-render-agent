@@ -145,29 +145,43 @@ def _gemini_wm_mask(H, W):
     return m
 
 
+LAMA_SIZE = 512   # Carve/LaMa-ONNX 模型输入是**固定 512×512**（喂别的尺寸会报 INVALID_ARGUMENT）
+
+
 def dewatermark(bgr, log=print):
-    """LaMa 修补掉 Gemini 水印区域。模型未就绪则原样返回。"""
+    """LaMa 修补掉 Gemini 水印区域。模型未就绪则原样返回。
+    关键：该 ONNX 模型输入固定 512×512。裁出包住水印的一块（带上下文）缩到 512 补全、
+    再缩回只贴回 mask 区——比整图缩 512 保留更多细节，也满足模型的固定输入尺寸。"""
     import cv2
     sess = _session("lama")
     H, W = bgr.shape[:2]
     mask = _gemini_wm_mask(H, W)
-    # LaMa 输入需为 8 的倍数；缩到不超过 1024 长边处理再贴回，省内存
-    proc = 1024
-    s = min(1.0, proc / max(H, W))
-    ph, pw = int(round(H * s)), int(round(W * s))
-    ph8, pw8 = (ph + 7) // 8 * 8, (pw + 7) // 8 * 8
-    img_r = cv2.resize(bgr, (pw8, ph8), interpolation=cv2.INTER_AREA)
-    msk_r = cv2.resize(mask, (pw8, ph8), interpolation=cv2.INTER_NEAREST)
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0:
+        return bgr
+    x0, x1, y0, y1 = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
+    # 向外扩一圈给 LaMa 上下文（补全更自然），再裁这块送模型
+    pad_x, pad_y = int((x1 - x0) * 0.6) + 8, int((y1 - y0) * 0.6) + 8
+    cx0, cy0 = max(0, x0 - pad_x), max(0, y0 - pad_y)
+    cx1, cy1 = min(W, x1 + pad_x + 1), min(H, y1 + pad_y + 1)
+    crop = bgr[cy0:cy1, cx0:cx1]
+    cmask = mask[cy0:cy1, cx0:cx1]
+    ch, cw = crop.shape[:2]
+    img_r = cv2.resize(crop, (LAMA_SIZE, LAMA_SIZE), interpolation=cv2.INTER_AREA)
+    msk_r = cv2.resize(cmask, (LAMA_SIZE, LAMA_SIZE), interpolation=cv2.INTER_NEAREST)
     rgb = cv2.cvtColor(img_r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     img_in = np.transpose(rgb, (2, 0, 1))[None]
     msk_in = (msk_r > 0).astype(np.float32)[None, None]
     out = sess.run(None, {"image": img_in, "mask": msk_in})[0][0]
-    out = np.clip(out.transpose(1, 2, 0), 0, 1)[:, :, ::-1] * 255  # →BGR
-    out = cv2.resize(out.astype(np.uint8), (W, H), interpolation=cv2.INTER_LANCZOS4)
-    # 只把 mask 区域贴回原图，mask 外保持原样（避免整图被 LaMa 轻微改动）
-    m3 = cv2.merge([mask, mask, mask]) > 0
+    # LaMa 输出已是 0-255 RGB（不是 0-1！之前误按 0-1 clip×255 → 整块饱和成白块）
+    out = np.clip(out.transpose(1, 2, 0), 0, 255)[:, :, ::-1]           # →BGR
+    out = cv2.resize(out.astype(np.uint8), (cw, ch), interpolation=cv2.INTER_LANCZOS4)
+    # 只把水印 mask 区域贴回原图（原分辨率），mask 外保持原样
     res = bgr.copy()
-    res[m3] = out[m3]
+    region = res[cy0:cy1, cx0:cx1].copy()
+    m = cmask > 0
+    region[m] = out[m]
+    res[cy0:cy1, cx0:cx1] = region
     log("已去除 Gemini 水印区域")
     return res
 
