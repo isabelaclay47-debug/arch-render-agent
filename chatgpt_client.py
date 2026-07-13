@@ -55,6 +55,7 @@ class ChatGPTClient:
         self.cancel = cancel  # threading.Event：用户点「提前结束」时置位，等待循环即时中止(#6b)
         self.nudge = nudge  # threading.Event：用户点"人工干预"按钮时置位
         self._pw = None
+        self._owns_pw = True        # 是否由本 client 创建/负责关闭 playwright（gemini 共用时为 False）
         self._browser = None
         self._ctx = None
         self._director_only = False
@@ -63,9 +64,13 @@ class ChatGPTClient:
 
     # ---------- 连接与页面管理 ----------
 
-    def connect(self, director_only: bool = False):
+    def connect(self, director_only: bool = False, pw=None):
+        """pw：可传入一个已启动的 sync_playwright（与 GeminiClient 共用）。
+        同一线程只能有一个 sync_playwright 实例，两个 client 接管同一个 Chrome 时必须共用，
+        否则第二个 .start() 会抛「Playwright Sync API inside the asyncio loop」。"""
         self._director_only = director_only
-        self._pw = sync_playwright().start()
+        self._owns_pw = pw is None
+        self._pw = pw or sync_playwright().start()
         try:
             self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
         except Exception as e:
@@ -107,12 +112,11 @@ class ChatGPTClient:
         这是硬崩溃下的无奈代价，但比整个任务结束要好；仅在页面确实死掉时才走这条路。
         """
         self.log("检测到浏览器/页面已断开，正在重连专用 Chrome 并重开页面…")
-        try:
-            if self._pw:
-                self._pw.stop()
-        except Exception:
-            pass
-        self._pw = sync_playwright().start()
+        # 不 stop 再 start playwright：可能与 GeminiClient 共用同一个 pw，停掉会连累对方，
+        # 且同一线程无法再起第二个 sync_playwright。CDP 断开只需重新 connect_over_cdp 拿新 browser。
+        if self._pw is None:
+            self._pw = sync_playwright().start()
+            self._owns_pw = True
         self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
         if not self._browser.contexts:
             raise ChatGPTError("重连后浏览器没有可用上下文——请检查专用 Chrome 是否还开着。")
@@ -164,7 +168,7 @@ class ChatGPTClient:
 
     def close(self):
         try:
-            if self._pw:
+            if self._pw and self._owns_pw:   # 只有创建者才关，避免关掉与 Gemini 共用的 pw
                 self._pw.stop()
         except Exception:
             pass

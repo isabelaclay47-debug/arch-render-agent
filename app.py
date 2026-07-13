@@ -553,7 +553,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             log("生图引擎：Gemini（nano-banana）网页驱动；ChatGPT 只做文本推理（理解/提示词/查篡改）。")
             gen_client = GeminiClient(log=log, nudge=_nudge, cancel=_finish_now,
                                       model=get_gemini_model())
-            gen_client.connect()
+            gen_client.connect(pw=client._pw)   # 共用 ChatGPT 的 playwright，避免同线程双实例报错
         gen = gen_client if engine == "gemini" else client   # 「生图这只手」用哪个 client
         with _lock:
             S["state"] = "running"

@@ -75,14 +75,18 @@ class GeminiClient:
         self.cancel = cancel        # threading.Event：用户点「提前结束」时置位，等待循环即时中止(#6b)
         self.model = (model or "").strip() or None   # 用户选的 Gemini 生图模型，None=用页面当前默认
         self._pw = None
+        self._owns_pw = True        # 是否由本 client 负责关闭 playwright；与 ChatGPT 共用时为 False
         self._browser = None
         self._ctx = None
         self.gen_page = None        # 生成对话页
 
     # ---------- 连接与页面管理 ----------
 
-    def connect(self):
-        self._pw = sync_playwright().start()
+    def connect(self, pw=None):
+        """pw：与 ChatGPTClient 共用的已启动 sync_playwright（必须共用——同一线程
+        无法起第二个 sync_playwright，否则抛「Playwright Sync API inside the asyncio loop」）。"""
+        self._owns_pw = pw is None
+        self._pw = pw or sync_playwright().start()
         try:
             self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
         except Exception as e:
@@ -169,12 +173,11 @@ class GeminiClient:
 
     def _reconnect(self):
         self.log("检测到浏览器/页面已断开，正在重连专用 Chrome 并重开 Gemini 页面…")
-        try:
-            if self._pw:
-                self._pw.stop()
-        except Exception:
-            pass
-        self._pw = sync_playwright().start()
+        # 不 stop 再 start playwright：与 ChatGPT 共用同一个 pw，停掉会连累对方，且同一线程
+        # 无法再起第二个 sync_playwright。CDP 断开只需重新 connect_over_cdp 拿新 browser。
+        if self._pw is None:
+            self._pw = sync_playwright().start()
+            self._owns_pw = True
         self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
         if not self._browser.contexts:
             raise GeminiError("重连后浏览器没有可用上下文——请检查专用 Chrome 是否还开着。")
@@ -277,7 +280,7 @@ class GeminiClient:
 
     def close(self):
         try:
-            if self._pw:
+            if self._pw and self._owns_pw:   # 只有创建者才关，避免关掉与 ChatGPT 共用的 pw
                 self._pw.stop()
         except Exception:
             pass
