@@ -32,3 +32,32 @@ def test_build_prompt_locally_handles_empty_gracefully():
     out = pe.build_prompt_locally("", "", [])
     assert out["prompt_zh"].strip()      # 不因空输入而产出空串
     assert out["prompt_en"].strip()
+
+
+def test_generation_multi_generic_enumerates_all_refs():
+    # "不定义每张"：两张通用参考图
+    msg = pe.generation_message_multi("PROMPT_BODY", ["generic", "generic"])
+    assert "I uploaded 3 images" in msg           # 底图 + 2 参考
+    assert "Image 2 is a general REFERENCE" in msg
+    assert "Image 3 is a general REFERENCE" in msg
+    assert "no questions, no explanation" in msg  # 防"分析而非生成"
+    assert "do NOT describe or analyze" in msg
+    assert pe.GENERATION_BASICS in msg
+    assert "PROMPT_BODY" in msg
+
+
+def test_generation_multi_defined_roles_render_distinct_text():
+    # "定义每张"：材质 + 氛围
+    msg = pe.generation_message_multi("BODY", ["material", "mood"])
+    assert "Image 2 is a MATERIAL sample" in msg
+    assert "Image 3 is a MOOD" in msg
+
+
+def test_generation_multi_unknown_role_falls_back_to_generic():
+    msg = pe.generation_message_multi("BODY", ["banana"])
+    assert "Image 2 is a general REFERENCE" in msg   # 未知角色回退通用，不崩
+
+
+def test_ref_role_labels_cover_all_english_roles():
+    # 前端下拉/后端校验用的中文标签，必须与英文角色一一对应
+    assert set(pe.REF_ROLE_LABELS) == set(pe.REF_ROLE_EN)

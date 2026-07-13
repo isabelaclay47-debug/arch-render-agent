@@ -539,7 +539,8 @@ def _update_meta(sess_dir: str, **fields):
 # ---------------- 主循环线程 ----------------
 
 def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: str,
-                quality: str, ratio: str, review_every: int = DEFAULT_REVIEW_EVERY):
+                quality: str, ratio: str, review_every: int = DEFAULT_REVIEW_EVERY,
+                ref_roles: list = None):
     client = ChatGPTClient(log=log, nudge=_nudge, cancel=_finish_now)
     engine = get_image_engine()
     gen_client = None          # 生图专用 client；gemini 引擎时才另开，否则复用 ChatGPT
@@ -673,13 +674,25 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                 log(f"第 {i} 轮：在上一张基础上做增量精修（省额度，不推倒重画）…")
                 gen_msg = pe.refine_message(refine_instruction, quality)
                 gen_base = last_gen
+                gen_imgs = [gen_base]   # 精修只发上一张，不掺参考图（避免破坏已成图）
             else:
                 log(f"第 {i} 轮：从原图底图重画（约 1-3 分钟）…")
-                gen_msg = pe.generation_message(prompt, quality, ratio)
                 gen_base = fidelity_base
+                # 有意向/材质图时，连同底图一起真发给生图 AI（不再只发底图、靠文字想象材质），
+                # 用逐张枚举角色的强祈使提示词，降低多图被"分析而非生成"的概率。
+                if ref_images:
+                    roles = list(ref_roles or []) + ["generic"] * max(0, len(ref_images) - len(ref_roles or []))
+                    roles = roles[:len(ref_images)]
+                    tags = "、".join(pe.REF_ROLE_LABELS.get(r, "通用参考") for r in roles)
+                    log(f"　随底图一并发送 {len(ref_images)} 张参考图给生图 AI（{tags}）。")
+                    gen_msg = pe.generation_message_multi(prompt, roles, quality, ratio)
+                    gen_imgs = [gen_base] + ref_images
+                else:
+                    gen_msg = pe.generation_message(prompt, quality, ratio)
+                    gen_imgs = [gen_base]
             gen.new_generation_chat()
             gen.send(gen.gen_page, gen_msg,
-                     image_paths=[gen_base], expect_image=True)
+                     image_paths=gen_imgs, expect_image=True)
             img_path = os.path.join(sess_dir, f"iter_{i:02d}.png")
             if not gen.download_last_image(gen.gen_page, img_path):
                 raise GenStalledError(f"第 {i} 轮似乎出图了但没抓到图片（页面可能假死）。")
@@ -975,10 +988,15 @@ def api_start():
             base_path = save_image_optimized_from_path(
                 base_from_path, os.path.join(sess_dir, "base"))
         ref_paths = []
+        ref_roles = []                                   # 每张参考图的角色（与 ref_paths 对齐）
+        raw_roles = request.form.getlist("ref_roles")    # 前端逐图下拉传来，顺序同 ref_images
+        _valid_roles = set(pe.REF_ROLE_LABELS.keys())
         for j, f in enumerate(request.files.getlist("ref_images")):
             if f and f.filename:
                 ref_paths.append(
                     save_image_optimized(f, os.path.join(sess_dir, f"ref_{j}")))
+                r = raw_roles[j] if j < len(raw_roles) else "generic"
+                ref_roles.append(r if r in _valid_roles else "generic")  # 不定义就是 generic
     except Exception as e:
         return jsonify({"ok": False, "msg": f"图片无法读取：{e}"}), 400
 
@@ -1011,7 +1029,7 @@ def api_start():
     review_every = max(1, min(review_every, 10))  # 夹在 1~10 张之间
     threading.Thread(target=run_session,
                      args=(requirement, base_path, ref_paths, sess_dir, quality, ratio,
-                           review_every),
+                           review_every, ref_roles),
                      daemon=True).start()
     return jsonify({"ok": True})
 

@@ -99,6 +99,10 @@
   .thumb-del { top: -6px; right: -6px; background: var(--wine, #8a2e2e); }
   .thumb-ann { top: -6px; left: -6px; background: var(--taupe, #6b6153); font-size: 10px; }
   .thumb-btn:hover { filter: brightness(1.15); }
+  .thumb-role { display:block; width:64px; margin-top:3px; font:10px/1.3 inherit; padding:1px 2px;
+    background: var(--field,#211E17); color: var(--ink,#EBE6DA);
+    border:1px solid rgba(255,255,255,.16); border-radius:4px; cursor:pointer; }
+  .thumb-wrap:has(.thumb-role) { width:64px; height:auto; margin-bottom:6px; }
   /* 素材库 */
   .asset-lib { border: 1px solid var(--sand); border-radius: 3px; padding: 8px; margin-top: 4px; background: var(--field); }
   .asset-tabs { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
@@ -400,7 +404,7 @@
       <button class="btn-ghost" type="button" style="width:100%;margin-top:8px"
               onclick="annotateBase()">✏️ 标注底图 <small>— 箭头/文字/椭圆/画笔 · 可改颜色粗细</small></button>
 
-      <label>意向图 <small>— 可选多张，仅借鉴氛围 / 材质 / 光线</small></label>
+      <label>意向图 <small>— 可选多张；每张可选角色（通用/材质/氛围/换入内容/图纸），不选=通用参考，会连同底图一起发给生图 AI</small></label>
       <div class="drop" id="refDrop" onclick="refInput.click()">
         <input type="file" id="refInput" accept="image/*" multiple onchange="preview(this,'refThumbs')">
         <span id="refHint">点击选择意向图</span>
@@ -889,6 +893,13 @@ async function apiJson(url, options = {}) {
   return data;
 }
 
+// 意向图角色（与后端 prompt_engine.REF_ROLE_LABELS 一一对应）。用户可逐张定义，
+// 默认「通用参考」= 你说的「不定义每张（除底图）」那种。
+const REF_ROLES = [["generic","通用参考"],["material","材质"],["mood","氛围/意向"],
+                   ["content","换入内容/物件"],["drawing","图纸"]];
+// 按 File 对象记角色：增删/重排图片都不会错位（File 对象稳定）
+const _refRoleMap = new WeakMap();
+
 function preview(input, boxId) {
   if (boxId === "baseThumbs" && input.files.length) {  // 改为上传新图 → 放弃历史底图选择
     selectedBaseFrom = "";
@@ -911,6 +922,15 @@ function preview(input, boxId) {
       ann.textContent = "✏"; ann.title = "标注这张意向图";
       ann.onclick = (e) => { e.stopPropagation(); annotateRef(idx); };
       wrap.appendChild(ann);
+      // 逐图角色下拉：默认「通用参考」；选材质/氛围/换入内容/图纸即"定义每张"
+      const role = document.createElement("select");
+      role.className = "thumb-role";
+      role.title = "这张图给生图 AI 的用途";
+      role.innerHTML = REF_ROLES.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+      role.value = _refRoleMap.get(f) || "generic";
+      role.onclick = (e) => e.stopPropagation();
+      role.onchange = (e) => { e.stopPropagation(); _refRoleMap.set(f, role.value); };
+      wrap.appendChild(role);
     }
     const del = document.createElement("button");                      // #2 移除已选图（不必替换）
     del.type = "button"; del.className = "thumb-btn thumb-del";
@@ -987,7 +1007,11 @@ async function start() {
   fd.append("quality", picked("quality"));
   fd.append("ratio", picked("ratio"));
   fd.append("review_every", picked("review_every"));
-  for (const f of $("refInput").files) fd.append("ref_images", f);
+  // 意向图 + 逐图角色（顺序对齐；没定义就是 generic 通用参考）
+  for (const f of $("refInput").files) {
+    fd.append("ref_images", f);
+    fd.append("ref_roles", _refRoleMap.get(f) || "generic");
+  }
   $("startBtn").disabled = true;
   rendered = 0; $("gallery").innerHTML = "";
   try {
