@@ -35,6 +35,51 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.join(APP_DIR, "workspace")
 os.makedirs(WORKSPACE, exist_ok=True)
 
+
+def _no_window_kwargs() -> dict:
+    """Windows 上给子进程加 CREATE_NO_WINDOW，隐藏那个会弹出来的黑色控制台窗口。
+    从无控制台的 GUI/pythonw 进程里 spawn 控制台程序（ollama.exe、git.exe）时，
+    Windows 默认会弹一个空白黑框（stdout 被 PIPE 走→黑的），吓人且看着像卡死。"""
+    return {"creationflags": 0x08000000} if os.name == "nt" else {}
+
+
+def _app_build() -> str:
+    """运行中这份代码的版本标记：VERSION + git 短 hash + 提交时间。
+    专治「改完必须重启 Windows 服务、但没法确认现在跑的到底是不是新码」——
+    界面会显示它，重启后对一眼版本号即知新旧（此坑反复让'修了却像没修'）。"""
+    try:
+        with open(os.path.join(APP_DIR, "VERSION"), encoding="utf-8") as f:
+            ver = f.read().strip()
+    except OSError:
+        ver = "?"
+    commit, when = "", ""
+    try:
+        out = subprocess.run(
+            ["git", "-C", APP_DIR, "log", "-1", "--format=%h",
+             "--date=format:%m-%d %H:%M"],
+            capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace", **_no_window_kwargs())
+        if out.returncode == 0:
+            commit = (out.stdout or "").strip().split("\n")[0].strip()
+        out2 = subprocess.run(
+            ["git", "-C", APP_DIR, "log", "-1", "--date=format:%m-%d %H:%M",
+             "--format=%cd"],
+            capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace", **_no_window_kwargs())
+        if out2.returncode == 0:
+            when = (out2.stdout or "").strip().split("\n")[0].strip()
+    except Exception:
+        pass
+    tag = f"v{ver}"
+    if commit:
+        tag += f" · {commit}"
+    if when:
+        tag += f" · {when}"
+    return tag
+
+
+APP_BUILD = _app_build()
+
 # 每几张图暂停一次等建筑师点评：由界面传入，默认 1（出一张就停，最省额度）
 DEFAULT_REVIEW_EVERY = 1
 
@@ -979,6 +1024,7 @@ def api_status():
         data["quality"] = _quality             # 当前画质档位，供前端下拉回显
         data["gemini_model"] = _gemini_model   # 当前 Gemini 生图模型，引擎=gemini 时前端下拉回显
         data["gemini_models"] = list(_GEMINI_MODELS)  # 可选模型清单，供前端渲染下拉
+        data["build"] = APP_BUILD              # 运行中代码版本标记，供确认「重启是否生效」
     return jsonify(data)
 
 
@@ -1492,7 +1538,7 @@ def _install_ollama_windows():
     else:
         raise RuntimeError(f"Ollama 安装包全部源都下载失败：{last_err}。可手动到 ollama.com 装。")
     _vlog("运行安装程序（静默、无需管理员）…")
-    subprocess.run([tmp, "/VERYSILENT", "/NORESTART"], timeout=900)
+    subprocess.run([tmp, "/VERYSILENT", "/NORESTART"], timeout=900, **_no_window_kwargs())
     for _ in range(30):          # 等安装落地
         if _ollama_exe():
             return
@@ -1529,17 +1575,40 @@ def _wait_ollama_up(timeout: int):
     raise RuntimeError("Ollama 服务启动超时，请手动运行 `ollama serve` 后重试。")
 
 
+def _iter_progress(stream):
+    """把 ollama 的输出按 \\r 或 \\n 切成一段段再吐出来。
+    关键：`ollama pull` 的下载进度是用 \\r 回车**覆盖刷新同一行**、并不换行，
+    若按 `for line in stream`（只在 \\n 断行）读，一层下完前收不到任何进度，
+    UI 就一直空着、看着像卡死、用户不知道下没下。逐字符按 \\r/\\n 断即可实时刷新。"""
+    buf = ""
+    while True:
+        ch = stream.read(1)
+        if ch == "":
+            break
+        if ch in ("\r", "\n"):
+            if buf.strip():
+                yield buf.strip()
+            buf = ""
+        else:
+            buf += ch
+    if buf.strip():
+        yield buf.strip()
+
+
 def _run_pull(exe: str, ref: str):
     """跑一次 `ollama pull <ref>`，实时把进度写进 _vlog，返回 (返回码, 最后一行)。
-    必须显式 UTF-8 解码：ollama 进度输出是 UTF-8，Windows 上 text=True 默认按 GBK 解码
-    会在遇到非 GBK 字节时崩（'gbk' codec can't decode byte 0x8b）；errors=replace 兜底。
-    注入系统代理，让有 VPN 的用户拉官方 registry 也走代理。"""
+    · 必须显式 UTF-8 解码：ollama 进度输出是 UTF-8，Windows 上 text=True 默认按 GBK
+      解码会在遇到非 GBK 字节时崩（'gbk' codec can't decode byte 0x8b）；errors=replace 兜底。
+    · 注入系统代理，让有 VPN 的用户拉官方 registry 也走代理。
+    · Windows 加 CREATE_NO_WINDOW：否则会弹出一个空白黑色控制台（stdout 被 PIPE 走），
+      吓人且看着像崩溃——这正是用户报的「下载卡死在一个黑终端」。
+    · 进度用 _iter_progress 按 \\r 断行，实时刷新，不再看着卡死。"""
     proc = subprocess.Popen([exe, "pull", ref], stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1,
-                            encoding="utf-8", errors="replace", env=_ollama_env())
+                            encoding="utf-8", errors="replace", env=_ollama_env(),
+                            **_no_window_kwargs())
     last = ""
-    for line in proc.stdout:
-        line = (line or "").strip()
+    for line in _iter_progress(proc.stdout):
         if line and line != last:
             last = line
             _vlog(line[:120])
@@ -2252,5 +2321,5 @@ def images(sess, name):
 
 
 if __name__ == "__main__":
-    print("建筑渲染智能体启动：http://127.0.0.1:5001")
+    print(f"建筑渲染智能体启动：http://127.0.0.1:5001  ｜ 版本 {APP_BUILD}")
     app.run(host="127.0.0.1", port=5001, debug=False)

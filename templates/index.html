@@ -327,7 +327,9 @@
 
 <div class="top"><div class="inner">
   <div>
-    <h1>ARCH<em> · </em>RENDER<span class="cn">建筑渲染智能体</span></h1>
+    <h1>ARCH<em> · </em>RENDER<span class="cn">建筑渲染智能体</span>
+        <span id="buildTag" title="当前运行的代码版本。改完代码必须重启本服务才生效——重启后来这里对一眼版本号，就知道新码有没有跑起来。"
+              style="font-size:11px;font-weight:400;color:var(--taupe);margin-left:10px;letter-spacing:0"></span></h1>
     <p>想法 → AI 扩写全面提示词 → 生图 → 对比查篡改 → 自动迭代 · 每 5 轮请你点评 · 满意后输出到桌面</p>
     <div class="swatches"><i></i><i></i><i></i><i></i><i></i></div>
   </div>
@@ -1274,6 +1276,8 @@ async function poll() {
     if (qSel && s.quality && document.activeElement !== qSel) qSel.value = s.quality;
     // Gemini 模型下拉：引擎=gemini 时显示，填充清单、回显、运行中禁用
     syncGeminiModels(s);
+    // 版本标记：让「重启是否生效」一眼可确认
+    const bt = $("buildTag"); if (bt && s.build) bt.textContent = s.build;
 
     // 确认关卡：进入时填一次（后续轮询不覆盖你正在编辑的内容）
     if (s.state === "waiting_confirm") {
