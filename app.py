@@ -1184,9 +1184,45 @@ def api_clarify():
     return jsonify({"ok": True})
 
 
+def _login_targets():
+    """按当前生图引擎返回需要检测/登录的站点：(名称, url匹配片段, 打开url, 就绪选择器)。
+    · ChatGPT 引擎：只需 ChatGPT。
+    · Gemini 引擎：需 Gemini(出图) ＋ ChatGPT(导演——理解/扩写提示词/查篡改仍走 ChatGPT)。
+      Gemini 放第一个：启动时它是前台标签，用户先登缺的那个。"""
+    import gemini_client as gc
+    chatgpt = ("ChatGPT", "chatgpt.com", "https://chatgpt.com/", "#prompt-textarea")
+    gemini = ("Gemini", "gemini.google.com", gc.GEMINI_URL, gc.SEL["editor"])
+    if get_image_engine() == "gemini":
+        return [gemini, chatgpt]
+    return [chatgpt]
+
+
+def _probe_login(browser, name, match, goto_url, ready_sel):
+    """在已接管的浏览器里找/开该站点标签，判断是否登录就绪。
+    返回 (status, detail)：ready / not_logged_in / conflict。"""
+    page = None
+    for c in browser.contexts:
+        page = next((p for p in c.pages if match in p.url), None)
+        if page:
+            break
+    if page is None:
+        try:
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.new_page()
+            page.goto(goto_url, wait_until="domcontentloaded", timeout=30000)
+        except Exception:
+            return ("conflict", f"{CDP_PORT} 端口被另一个调试浏览器占用——关掉那个程序后再点「检测」")
+    try:
+        page.wait_for_selector(ready_sel, timeout=8000)
+        return ("ready", f"{name} 已登录")
+    except Exception:
+        return ("not_logged_in", f"Chrome 已启动，但 {name} 未登录（去那个窗口登录一次）")
+
+
 @app.route("/api/chrome_status")
 def api_chrome_status():
-    """检测专用 Chrome 与 ChatGPT 登录状态：chrome_off / not_logged_in / ready。"""
+    """检测专用 Chrome 与登录状态，按当前生图引擎决定查哪个站点（见 _login_targets）：
+    chrome_off / conflict / not_logged_in / ready。"""
     if S["state"] in ("connecting", "running", "waiting_confirm",
                       "waiting_clarification", "waiting_feedback", "editing"):
         return jsonify({"status": "ready", "detail": "渲染任务运行中，连接正常"})
@@ -1198,42 +1234,29 @@ def api_chrome_status():
         from playwright.sync_api import sync_playwright
         with sync_playwright() as pw:
             browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
-            page = None
-            for c in browser.contexts:
-                page = next((p for p in c.pages if "chatgpt.com" in p.url), None)
-                if page:
-                    break
-            if page is None:
-                try:
-                    ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-                    page = ctx.new_page()
-                    page.goto("https://chatgpt.com/", wait_until="domcontentloaded",
-                              timeout=30000)
-                except Exception:
-                    return jsonify({"status": "conflict",
-                                    "detail": f"{CDP_PORT} 端口被另一个调试浏览器占用——"
-                                              "关掉那个程序后再点「检测」"})
-            try:
-                page.wait_for_selector("#prompt-textarea", timeout=8000)
-                return jsonify({"status": "ready", "detail": "ChatGPT 已登录，就绪"})
-            except Exception:
-                return jsonify({"status": "not_logged_in",
-                                "detail": "Chrome 已启动，但 ChatGPT 未登录（去那个窗口登录一次）"})
+            targets = _login_targets()
+            for name, match, goto_url, ready_sel in targets:
+                st, detail = _probe_login(browser, name, match, goto_url, ready_sel)
+                if st != "ready":
+                    return jsonify({"status": st, "detail": detail})
+            names = "、".join(t[0] for t in targets)
+            return jsonify({"status": "ready", "detail": f"{names} 已登录，就绪"})
     except Exception as e:
         return jsonify({"status": "chrome_off", "detail": f"连接失败：{e}"})
 
 
 @app.route("/api/launch_chrome", methods=["POST"])
 def api_launch_chrome():
-    """一键启动带调试端口的专用 Chrome。"""
+    """一键启动带调试端口的专用 Chrome，并按当前引擎打开需要登录的站点标签
+    （Gemini 引擎会同时打开 Gemini 与 ChatGPT，Gemini 在前台先登）。"""
     chrome = _find_chrome()
     if not chrome:
         return jsonify({"ok": False,
                         "msg": "没找到 Chrome，请确认已安装 Google Chrome"}), 400
+    urls = [t[2] for t in _login_targets()]
     subprocess.Popen([chrome, f"--remote-debugging-port={CDP_PORT}",
                       f"--user-data-dir={_chrome_profile_arg(chrome)}",
-                      "--no-first-run", "--no-default-browser-check",
-                      "https://chatgpt.com/"])
+                      "--no-first-run", "--no-default-browser-check", *urls])
     return jsonify({"ok": True})
 
 

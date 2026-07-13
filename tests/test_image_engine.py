@@ -71,6 +71,20 @@ def test_gemini_client_shares_stalled_error():
     assert gemini_client.GenStalledError is GenStalledError
 
 
+def test_login_targets_follow_engine():
+    # ChatGPT 引擎只查 ChatGPT；Gemini 引擎要查 Gemini(出图)＋ChatGPT(导演)，且 Gemini 在前
+    appmod.set_image_engine("chatgpt")
+    t = appmod._login_targets()
+    assert [x[0] for x in t] == ["ChatGPT"]
+    try:
+        appmod.set_image_engine("gemini")
+        t = appmod._login_targets()
+        assert [x[0] for x in t] == ["Gemini", "ChatGPT"]
+        assert "gemini.google.com" in t[0][2]        # 启动时先弹 Gemini 让用户登
+    finally:
+        appmod.set_image_engine("chatgpt")
+
+
 def test_set_gemini_model_rejects_unknown():
     import pytest
     with pytest.raises(ValueError):

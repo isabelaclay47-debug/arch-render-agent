@@ -448,7 +448,8 @@
 
       <button class="btn-primary" id="startBtn" onclick="start()">开 始 渲 染</button>
       <p style="color:var(--taupe);font-size:11.5px;margin:12px 0 0">
-        开始前请确认右上角状态灯为绿色（ChatGPT 已登录）——未启动时点「启动 Chrome 去登录」</p>
+        开始前请确认右上角状态灯为绿色（已登录并就绪）——未启动时点「启动 Chrome 去登录」。
+        用 Gemini 生图时需同时登录 Gemini（出图）与 ChatGPT（负责理解想法和查篡改的文字推理）。</p>
     </div>
 
     <!-- 历史成图：挑一张当新底图（痛点三）+ 重点/删除/回收站 -->
@@ -1375,6 +1376,7 @@ async function changeEngine(v) {
     }
     // 引擎变了立即显隐 Gemini 模型下拉（不必等下一次轮询）
     const gw = $("geminiModelWrap"); if (gw) gw.style.display = (v === "gemini") ? "flex" : "none";
+    checkConn();   // 引擎变了立即重新检测登录：Gemini 会查 Gemini＋ChatGPT，ChatGPT 只查 ChatGPT
   } catch (e) { alert("切换失败：" + e.message); }
 }
 
