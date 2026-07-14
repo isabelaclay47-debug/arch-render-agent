@@ -117,6 +117,13 @@ class GeminiClient:
         key = self.model.split()[-1]          # "2.5 Flash" -> "Flash"；"2.5 Pro" -> "Pro"
         try:
             # 已在目标模型？输入框里的模型按钮文本含区分词就当已选中（默认 Flash 时零操作）
+            # 关键：Gemini 是 SPA，模型按钮在页面 hydrate 之后才渲染出来。过去用
+            # query_selector 立刻查 → 按钮还没出现就当"没找到"，误报"请手动切换"。
+            # 改用 wait_for_selector 等它最多 10s 真正出现，再判断。
+            try:
+                page.wait_for_selector(SEL["model_switcher"], timeout=10000)
+            except Exception:
+                pass
             try:
                 switcher = page.query_selector(SEL["model_switcher"])
                 if switcher and key.lower() in (switcher.inner_text() or "").lower():
