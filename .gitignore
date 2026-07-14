@@ -25,6 +25,7 @@ static/vendor/
 
 # 编辑器 / 工具状态
 .omc/
+.omx/
 .vscode/
 .idea/
 

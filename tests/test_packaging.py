@@ -31,6 +31,9 @@ def test_make_release_builds_zip_with_start_here():
     m = _load("make_release")
     files = m._tracked_files()
     assert "app.py" in files and "requirements-core.txt" in files
+    # 开发/内部文件不进用户包
+    assert not any(f.startswith("tests/") or f.startswith("docs/") for f in files)
+    assert "RELEASE_HANDOFF.md" not in files and ".gitattributes" not in files
     out = m.build("windows", files, "test")
     try:
         assert os.path.isfile(out)
@@ -38,7 +41,25 @@ def test_make_release_builds_zip_with_start_here():
             names = z.namelist()
             assert any("先看我-Windows.txt" in n for n in names)   # 平台说明在包里
             assert any(n.endswith("/app.py") for n in names)        # 源码在包里
+            assert any(n.endswith("双击启动.bat") for n in names)   # 本平台启动脚本在
             assert not any("/.git/" in n for n in names)            # 不打包 .git
+            assert not any("/tests/" in n for n in names)           # 不打包测试
+            assert not any(n.endswith(".command") for n in names)   # Windows 包不混 Mac 脚本
+    finally:
+        if os.path.isfile(out):
+            os.remove(out)
+
+
+def test_mac_package_has_no_windows_launchers():
+    m = _load("make_release")
+    files = m._tracked_files()
+    out = m.build("mac", files, "test")
+    try:
+        with zipfile.ZipFile(out) as z:
+            names = z.namelist()
+            assert any(n.endswith("双击启动-Mac.command") for n in names)  # Mac 启动脚本在
+            assert not any(n.endswith(".bat") for n in names)              # 不混 Windows 脚本
+            assert any("先看我-Mac.txt" in n for n in names)
     finally:
         if os.path.isfile(out):
             os.remove(out)

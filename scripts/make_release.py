@@ -24,12 +24,24 @@ def _version() -> str:
         return "0.0.0"
 
 
+# 开发/内部文件：不该进发给非技术用户的包（tests、开发文档、git 配置、codex 交接、
+# 打包脚本本身）。只留"下载即能跑"所需的运行文件 + 启动脚本 + README。
+_EXCLUDE_PREFIXES = ("tests/", "docs/")
+_EXCLUDE_FILES = {".gitattributes", ".gitignore", "RELEASE_HANDOFF.md",
+                  "HANDOFF.md", "scripts/make_release.py"}
+
+
+def _is_dev_file(rel: str) -> bool:
+    return rel in _EXCLUDE_FILES or any(rel.startswith(p) for p in _EXCLUDE_PREFIXES)
+
+
 def _tracked_files() -> list:
-    """git 跟踪的文件列表（-z 防中文/空格名出错）。只打包这些，天然排除 venv/models/缓存。"""
+    """git 跟踪、且属于"用户运行所需"的文件（-z 防中文/空格名出错）。
+    天然排除 venv/models/缓存（未跟踪），再剔掉开发/内部文件（见 _is_dev_file）。"""
     out = subprocess.run(["git", "-C", APP_DIR, "ls-files", "-z"],
                          capture_output=True)
     names = out.stdout.decode("utf-8", "replace").split("\0")
-    return [n for n in names if n]
+    return [n for n in names if n and not _is_dev_file(n)]
 
 
 # 每平台顶层「先看我」——非技术用户照着做即可
@@ -66,6 +78,17 @@ START_HERE = {
 }
 
 
+def _other_platform_launcher(platform: str, rel: str) -> bool:
+    """是否是"另一平台"的启动脚本——用户反馈包里 Win/Mac 混在一起。
+    Windows 包只留 .bat；Mac 包只留 .command。其它文件（.py/.txt/.md/模板/静态）两边都要。"""
+    base = os.path.basename(rel).lower()
+    if platform == "windows":
+        return base.endswith(".command")   # 剔掉 Mac 脚本
+    if platform == "mac":
+        return base.endswith(".bat")       # 剔掉 Windows 脚本
+    return False
+
+
 def build(platform: str, files: list, version: str) -> str:
     os.makedirs(DIST, exist_ok=True)
     zip_path = os.path.join(DIST, f"ArchRenderAgent-{platform}-{version}.zip")
@@ -75,6 +98,8 @@ def build(platform: str, files: list, version: str) -> str:
         # 「先看我」排在最前
         z.writestr(f"{top}/{fname}", ftext.encode("utf-8"))
         for rel in files:
+            if _other_platform_launcher(platform, rel):
+                continue                      # 只放本平台的启动脚本，不混另一平台的
             src = os.path.join(APP_DIR, rel)
             if os.path.isfile(src):
                 z.write(src, f"{top}/{rel}")

@@ -20,9 +20,15 @@
 ```
 python scripts/make_release.py          # 产出 dist/ArchRenderAgent-windows-<ver>.zip 与 -mac-<ver>.zip
 ```
-- 只打包 git 跟踪的文件；模型/venv/登录态**不进包**。
+- 只打包 git 跟踪、且用户运行所需的文件；模型/venv/登录态/测试/开发文档**不进包**。
+- **每个平台包只含本平台启动脚本**：Windows 包只有 `.bat`，Mac 包只有 `.command`——
+  不再 Win/Mac 混在一起（用户明确反馈过"里面全是 mac"）。
 - 每个 zip 顶层有「① 先看我-<平台>.txt」，非技术用户照做即可（双击对应启动脚本）。
 - 模型（超分/去水印/本地识图）首次使用时自动从免 VPN 源下载。
+
+**Release 页面务必把两个包分开、清楚标注平台**，让用户一眼下到自己系统的那个：
+- `ArchRenderAgent-windows-<ver>.zip` —— Windows 用户下这个
+- `ArchRenderAgent-mac-<ver>.zip` —— macOS 用户下这个
 
 ## 三、codex 待办（后期发布/宣传）
 1. **GitHub Release**：给当前版本打 tag（如 `v1.2.0`），上传上面两个 zip，写 Release Notes
