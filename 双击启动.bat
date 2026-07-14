@@ -27,10 +27,10 @@ if not exist ".venv-win\Scripts\python.exe" (
   echo 首次运行：正在创建虚拟环境并安装依赖，请耐心等待...
   %PY% -m venv .venv-win || ( echo 创建虚拟环境失败。 & pause & exit /b 1 )
   ".venv-win\Scripts\python.exe" -m pip install --upgrade pip >nul 2>nul
-  ".venv-win\Scripts\python.exe" -m pip install -r requirements.txt || ( echo 依赖安装失败，请检查网络后重试。 & pause & exit /b 1 )
+  ".venv-win\Scripts\python.exe" scripts\setup_wizard.py || ( echo 依赖安装失败，请检查网络后重试。 & pause & exit /b 1 )
 ) else (
   echo 检查依赖是否齐全...
-  ".venv-win\Scripts\python.exe" -m pip install -r requirements.txt >nul 2>nul
+  ".venv-win\Scripts\python.exe" scripts\setup_wizard.py >nul 2>nul
 )
 
 REM ---- 3) 检查 Google Chrome（本工具靠接管你自己的 Chrome，必须先装）----

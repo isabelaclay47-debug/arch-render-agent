@@ -30,3 +30,9 @@ static/vendor/
 
 # Playwright CLI 测试临时产物
 .playwright-cli/
+
+# 发布打包产物（scripts/make_release.py 生成）
+dist/
+
+# 首次安装向导记住的选择（本机私有）
+.setup_state.json

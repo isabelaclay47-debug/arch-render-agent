@@ -21,7 +21,8 @@ if [ ! -x ".venv/bin/python" ]; then
   "$PY" -m venv .venv || { echo "创建虚拟环境失败。"; read -n 1; exit 1; }
 fi
 .venv/bin/python -m pip install -q --upgrade pip >/dev/null 2>&1
-.venv/bin/python -m pip install -q -r requirements.txt || { echo "依赖安装失败，请检查网络后重试。"; read -n 1; exit 1; }
+# 安装向导：核心依赖必装；可选组件（超分/去水印）首次问一次、之后不再问
+.venv/bin/python scripts/setup_wizard.py || { echo "环境准备失败，请检查网络后重试。"; read -n 1; exit 1; }
 
 # ---- 3) 打开带调试端口的专用 Chrome（首次登录 chatgpt.com，别关那个窗口）----
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"

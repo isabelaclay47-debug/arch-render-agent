@@ -1,0 +1,7 @@
+# 核心依赖：主流程（ChatGPT/Gemini 生图、网页服务、提示词助手）必装。
+# 一键启动脚本每次都会静默确保这些就位。
+Flask>=3.0,<4
+Pillow>=10,<13
+requests>=2.31,<3
+playwright>=1.45,<2
+pytest>=8,<9

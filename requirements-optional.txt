@@ -1,0 +1,5 @@
+# 可选组件：本地画质增强（Swin2SR 超分）/ 去水印（LaMa）。离线、免 API key。
+# 首次启动会问一次是否安装；缺这些不影响主流程（image_enhance 惰性 import，优雅跳过）。
+onnxruntime>=1.17
+opencv-python-headless>=4.9
+numpy>=1.26
