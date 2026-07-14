@@ -529,17 +529,32 @@ class ChatGPTClient:
                 quiet += 1
                 need = 8 if expect_image else 3  # 生图有分段渲染，多等几拍
                 if quiet >= need:
-                    if not expect_image or self._last_image_handle(page) is not None:
-                        return
-                    # 输出停了却没有图——典型的网页假死，刷新一下图往往就出来了
-                    if time.time() - last_activity > self.RELOAD_INTERVAL:
-                        stuck_escalate("生成似乎结束但图片没出现，页面可能假死")
+                    if expect_image:
+                        if self._last_image_handle(page) is not None:
+                            return
+                        # 输出停了却没有图——典型的网页假死，刷新一下图往往就出来了
+                        if time.time() - last_activity > self.RELOAD_INTERVAL:
+                            stuck_escalate("生成似乎结束但图片没出现，页面可能假死")
+                            quiet = 0
+                    else:
+                        # 文本：流式停了，但必须**真的有文字**才算完成。空文本几乎都是
+                        # "助手容器已建、内容还没渲染进来"的竞态——导演首轮带图上传尤其常见。
+                        # 若此时返回空串，上层会判成"英文提示词偏短/缺失（空）"(Image#9)。
+                        # 所以空就继续等；久久为空再刷新，绝不返回空。
+                        if self.last_reply_text(page).strip():
+                            return
                         quiet = 0
+                        if time.time() - last_activity > self.RELOAD_INTERVAL:
+                            stuck_escalate("回复容器已出现但文字始终为空，页面可能假死")
             if force_ceiling():   # 一直"生成中"转圈也照样兜底强制刷新
                 quiet = 0
             page.wait_for_timeout(1000)
         if expect_image:
             raise ChatGPTError(f"等了 {timeout}s 图片仍未生成完成（可能额度用尽或排队），请到 Chrome 里确认。")
+        # 文本：走到这里=超时仍没拿到非空回复 → 抛错让 send() 自愈重试，绝不返回空串
+        # （空串会被上层当成"提示词缺失"，是 Image#9 报错的根）。
+        if not self.last_reply_text(page).strip():
+            raise ChatGPTError(f"等了 {timeout}s 助手回复仍为空（网页可能假死或未真正生成），已自动重试。")
 
     # ---------- 读回复 ----------
 

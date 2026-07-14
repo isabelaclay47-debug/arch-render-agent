@@ -144,3 +144,44 @@ def test_send_does_not_retry_on_cancel():
     except GenCancelled:
         pass
     assert recovered == [], "提前结束不应触发任何自愈重试"
+
+
+# ---------------- Image#9：导演空回复绝不返回空串 ----------------
+
+class _MsgLoc:
+    def __init__(self, count, text="", visible=False):
+        self._count, self._text, self._visible = count, text, visible
+    def count(self): return self._count
+    @property
+    def first(self): return self
+    @property
+    def last(self): return self
+    def is_visible(self): return self._visible
+    def inner_text(self): return self._text
+
+
+class EmptyReplyPage:
+    """助手容器已出现(count=1)但文字始终为空、且不流式——复现导演首轮空回复竞态。"""
+    def __init__(self):
+        self.reloads = 0
+        self.closed = False
+    def locator(self, sel):
+        if sel == cc.SEL["assistant"]:
+            return _MsgLoc(count=1, text="", visible=False)   # 容器在、文字空
+        return _MsgLoc(count=0, text="", visible=False)       # stop 不可见=不流式
+    def reload(self, **k): self.reloads += 1
+    def wait_for_timeout(self, ms): _now[0] += ms / 1000.0
+    def evaluate(self, *a, **k): return 1
+    def close(self): self.closed = True
+    def goto(self, *a, **k): pass
+
+
+def test_wait_reply_never_returns_empty_text(monkeypatch):
+    """文本回复容器出现但文字为空时，绝不返回空串（会害上层判成"英文提示词缺失"），
+    而是抛 ChatGPTError 让 send 自愈重试。"""
+    import pytest
+    monkeypatch.setattr(cc.time, "time", lambda: _now[0])
+    _now[0] = 1000.0
+    client = ChatGPTClient(log=lambda *a, **k: None)
+    with pytest.raises(ChatGPTError):
+        client._wait_reply_done(EmptyReplyPage(), before_count=0, timeout=30, expect_image=False)
