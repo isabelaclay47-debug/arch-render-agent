@@ -59,7 +59,23 @@ def test_mac_package_has_no_windows_launchers():
             names = z.namelist()
             assert any(n.endswith("双击启动-Mac.command") for n in names)  # Mac 启动脚本在
             assert not any(n.endswith(".bat") for n in names)              # 不混 Windows 脚本
+            assert not any(n.endswith(".sh") for n in names)               # 不混 Linux 脚本
             assert any("先看我-Mac.txt" in n for n in names)
+    finally:
+        if os.path.isfile(out):
+            os.remove(out)
+
+
+def test_linux_package_only_has_shell_launchers():
+    m = _load("make_release")
+    files = m._tracked_files()
+    out = m.build("linux", files, "test")
+    try:
+        with zipfile.ZipFile(out) as z:
+            names = z.namelist()
+            assert any(n.endswith("双击启动-Linux.sh") for n in names)     # Linux 启动脚本在
+            assert not any(n.endswith(".bat") or n.endswith(".command") for n in names)
+            assert any("先看我-Linux.txt" in n for n in names)
     finally:
         if os.path.isfile(out):
             os.remove(out)

@@ -75,17 +75,34 @@ START_HERE = {
             "彻底停止：双击『停止服务-Mac.command』。\n"
             "出问题看：logs/app.log。\n\n"
             "没有账号/VPN？页面里把引擎切到『本地大模型』，本机离线识图，免账号免 VPN。\n"),
+    "linux": ("① 先看我-Linux.txt",
+              "建筑渲染智能体 — Linux 使用说明\n"
+              "========================================\n\n"
+              "第一次使用：\n"
+              "  1. 确保已装 Google Chrome 或 Chromium，以及 python3 与 python3-venv。\n"
+              "  2. 在终端进入本目录，运行： chmod +x 双击启动-Linux.sh && ./双击启动-Linux.sh\n"
+              "     （或在文件管理器里右键→以程序运行）。首次会自动装环境（1-3 分钟），\n"
+              "     并问一次要不要装『本地画质增强/去水印』可选组件（可选，只问这一次）。\n"
+              "  3. 会打开一个专用 Chrome，请登录 chatgpt.com（或 gemini.google.com），别关那窗口。\n"
+              "  4. 浏览器自动打开 http://127.0.0.1:5001 —— 就能用了。\n\n"
+              "以后每次：运行『双击启动-Linux.sh』即可。\n"
+              "彻底停止：运行『停止服务-Linux.sh』。\n"
+              "出问题看：logs/app.log。\n\n"
+              "没有账号/VPN？页面里把引擎切到『本地大模型』，本机离线识图，免账号免 VPN。\n"),
 }
 
 
+# 各平台的启动脚本后缀：Windows=.bat、Mac=.command、Linux=.sh
+_LAUNCHER_EXT = {"windows": ".bat", "mac": ".command", "linux": ".sh"}
+
+
 def _other_platform_launcher(platform: str, rel: str) -> bool:
-    """是否是"另一平台"的启动脚本——用户反馈包里 Win/Mac 混在一起。
-    Windows 包只留 .bat；Mac 包只留 .command。其它文件（.py/.txt/.md/模板/静态）两边都要。"""
+    """是否是"别的平台"的启动脚本——用户反馈包里各平台脚本混在一起。
+    每个包只留本平台后缀的启动脚本；其它文件（.py/.txt/.md/模板/静态）各平台都要。"""
     base = os.path.basename(rel).lower()
-    if platform == "windows":
-        return base.endswith(".command")   # 剔掉 Mac 脚本
-    if platform == "mac":
-        return base.endswith(".bat")       # 剔掉 Windows 脚本
+    for plat, ext in _LAUNCHER_EXT.items():
+        if plat != platform and base.endswith(ext):
+            return True
     return False
 
 
@@ -113,7 +130,7 @@ def main() -> int:
     if not files:
         print("[错误] 没拿到 git 跟踪文件列表——确认在仓库内且已 git add。")
         return 1
-    plats = ["windows", "mac"]
+    plats = ["windows", "mac", "linux"]
     if "--platform" in argv:
         plats = [argv[argv.index("--platform") + 1]]
     for p in plats:
