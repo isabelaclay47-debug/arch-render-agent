@@ -61,3 +61,19 @@ def test_generation_multi_unknown_role_falls_back_to_generic():
 def test_ref_role_labels_cover_all_english_roles():
     # 前端下拉/后端校验用的中文标签，必须与英文角色一一对应
     assert set(pe.REF_ROLE_LABELS) == set(pe.REF_ROLE_EN)
+
+
+def test_director_prompt_has_architectural_read_step():
+    # 建筑专用识图：动笔前必须"先读原图"抽建筑关键事实（强化忠实度），
+    # 而不是泛泛描述"一栋现代建筑"。
+    sp = pe.director_system_prompt()
+    assert pe.ARCH_READ_STEP in sp
+    for kw in ("先读原图", "体量", "开窗", "标志性构件", "材质"):
+        assert kw in sp
+
+
+def test_arch_read_step_requires_facts_in_understanding_and_prompt():
+    # 识别到的建筑事实要写进<理解>让建筑师复核，也要"钉死"进英文提示词保忠实
+    step = pe.ARCH_READ_STEP
+    assert "<理解>" in step
+    assert "英文提示词" in step
