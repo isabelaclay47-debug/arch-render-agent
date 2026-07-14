@@ -77,3 +77,19 @@ def test_arch_read_step_requires_facts_in_understanding_and_prompt():
     step = pe.ARCH_READ_STEP
     assert "<理解>" in step
     assert "英文提示词" in step
+
+
+def test_helper_understand_prompt_is_understanding_only():
+    # 第一步只出理解、先不写提示词（对话确认式的前半段）
+    p = pe.helper_understand_prompt("黄昏暖光")
+    assert "<理解>" in p and "先不要写提示词" in p
+    assert "黄昏暖光" in p
+    assert "英文提示词" not in p     # 这一步不产提示词
+
+
+def test_helper_generate_after_confirm_uses_confirmed_understanding():
+    # 第二步以"已确认的理解"为准绳产出双语提示词
+    p = pe.helper_generate_after_confirm_prompt("两栋石材办公楼，六层，竖向开窗", intent="加行人")
+    assert "两栋石材办公楼，六层，竖向开窗" in p
+    assert "加行人" in p
+    assert pe._BILINGUAL_OUTPUT_SPEC in p

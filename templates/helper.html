@@ -52,7 +52,15 @@
   <div class="pills" id="presets"></div>
 </div>
 
-<button class="go" onclick="generate()">生成提示词</button>
+<button class="go" onclick="understand()">看图理解 → 认可后再生成</button>
+
+<!-- 对话确认式：先给 AI 的理解，用户认可/修正后再生成提示词（像主页面那样） -->
+<div class="card hidden" id="confirmCard" style="margin-top:16px">
+  <label class="muted">AI 看懂了这张图什么（可直接修改；改这里 = 告诉它正确的画面，再认可）</label>
+  <textarea id="understandEdit" placeholder="点上面「看图理解」，这里会显示 AI 对你这张底图的理解…"></textarea>
+  <div id="questionBox" class="muted" style="margin-top:6px;white-space:pre-wrap"></div>
+  <button class="go" onclick="confirmGenerate()" style="margin-top:10px">✓ 认可，据此生成提示词</button>
+</div>
 
 <div class="card hidden" id="result" style="margin-top:16px">
   <div id="understanding" class="muted" style="margin-bottom:10px"></div>

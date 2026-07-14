@@ -475,6 +475,41 @@ def helper_refine_prompt(draft: str, prev_zh: str = "", feedback: str = "") -> s
 在 <理解> 段里，先用中文**如实复述你对用户意图和图面的理解**，并明确点出你做了哪些假设、哪里可能有歧义——好让用户先确认你真的理解对了，再看下面的提示词；若理解有偏差，用户会用「按我的意见改一版」纠正你。{_BILINGUAL_OUTPUT_SPEC}"""
 
 
+def helper_understand_prompt(intent: str = "") -> str:
+    """助手页·第一步「看图理解」（ChatGPT 引擎）：只看图 + 想法，先给中文理解(+必要时反问)，
+    **先不写提示词**——等用户在页面上认可/纠正后，第二步才生成提示词。对应用户要的
+    "上传图要和提示词有联系、且对话确认式、认可后再生成"。产出用 parse_director_reply 解析。"""
+    intent_block = f"\n\n【建筑师的想法】\n{intent}" if intent.strip() else ""
+    return f"""你是资深建筑可视化提示词导演。用户上传了一张建筑图作为底图参照。请**仔细看图**，
+按建筑专用识图逐项看准：建筑类型与体量组合、层数、立面开窗节奏、柱网、标志性构件、
+主要材质、视角与光线。{intent_block}
+
+这一步**只做理解、先不要写提示词**。请严格按以下格式输出，不要输出别的：
+<理解>
+（用中文如实复述你看到的关键建筑事实 + 你对用户想法的理解 + 你打算怎么处理；3~6 句、说人话，
+让用户一眼看出你有没有看懂/看错。）
+</理解>
+<反问>
+（仅当存在会直接影响出图方向的关键疑问时才写，最多 3 条、每行一个；没有就整段省略。）
+</反问>"""
+
+
+def helper_generate_after_confirm_prompt(confirmed_understanding: str, intent: str = "",
+                                         preset_texts=None) -> str:
+    """助手页·第二步「认可后生成」（ChatGPT 引擎）：用户已确认/修正了上面的理解，
+    据此产出正式的双语提示词。以确认过的理解为准绳，确保提示词和底图/意图真正挂钩。"""
+    preset_texts = [t.strip() for t in (preset_texts or []) if t and t.strip()]
+    intent_block = f"\n\n【建筑师的想法】\n{intent}" if intent.strip() else ""
+    preset_block = ("\n\n【建筑师勾选的专业要求】\n- " + "\n- ".join(preset_texts)) if preset_texts else ""
+    return f"""建筑师已经**确认**了你对这张底图的理解（如下，可能有他的修正，以这份为准）：
+
+【已确认的画面理解】
+{confirmed_understanding}{intent_block}{preset_block}
+
+请严格以这份已确认的理解为准绳，产出正式的生图提示词——把其中的建筑事实"钉死"进英文提示词，
+确保生成图忠实于这张底图、并落实建筑师的想法。{_BILINGUAL_OUTPUT_SPEC}"""
+
+
 # ======================================================================
 #  五、本地确定性拼装（助手页"本地模式"：无 LLM、不联网）
 # ======================================================================

@@ -1403,6 +1403,85 @@ def api_helper_refine():
         client.close()
 
 
+def _helper_busy() -> bool:
+    return S["state"] in ("connecting", "running", "waiting_confirm",
+                          "waiting_clarification", "waiting_feedback", "editing")
+
+
+def _helper_save_image(img):
+    """存助手页上传的图到 _helper 临时目录，返回路径列表（无图=空）。异常上抛。"""
+    if not (img and img.filename):
+        return []
+    tmp_dir = os.path.join(WORKSPACE, "_helper")
+    os.makedirs(tmp_dir, exist_ok=True)
+    return [save_image_optimized(img, os.path.join(tmp_dir, datetime.now().strftime("h_%H%M%S")))]
+
+
+@app.route("/api/helper_understand", methods=["POST"])
+def api_helper_understand():
+    """助手页·第一步（ChatGPT 引擎）：看图 + 想法 → 只给中文理解(+反问)，先不出提示词。
+    对话确认式的前半段：让用户先确认 AI 有没有看懂，再进第二步生成。"""
+    if _helper_busy():
+        return jsonify({"ok": False, "msg": "当前正在渲染，稍后再用 ChatGPT 精修"}), 409
+    if not _helper_chatgpt_ready():
+        return jsonify({"ok": False,
+                        "msg": "没检测到可用的 ChatGPT（需已启动专用 Chrome 并登录），可切到「本地」模式"}), 400
+    intent = (request.form.get("intent") or "").strip()
+    try:
+        img_paths = _helper_save_image(request.files.get("image"))
+    except Exception as e:
+        return jsonify({"ok": False, "msg": f"图片无法读取：{e}"}), 400
+    client = ChatGPTClient(log=log)
+    try:
+        client.connect(director_only=True)
+        reply = client.send(client.director_page,
+                            pe.helper_understand_prompt(intent), image_paths=img_paths)
+        parsed = pe.parse_director_reply(reply)
+        return jsonify({"ok": True,
+                        "understanding_zh": parsed["understanding"],
+                        "questions": pe.extract_questions(reply)})
+    except ChatGPTError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 502
+    finally:
+        client.close()
+
+
+@app.route("/api/helper_generate", methods=["POST"])
+def api_helper_generate():
+    """助手页·第二步（ChatGPT 引擎）：用户已认可/修正上一步的理解 → 据此产出双语提示词。
+    以确认过的理解为准绳，确保提示词真正和底图/意图挂钩。"""
+    if _helper_busy():
+        return jsonify({"ok": False, "msg": "当前正在渲染，稍后再用 ChatGPT 精修"}), 409
+    if not _helper_chatgpt_ready():
+        return jsonify({"ok": False,
+                        "msg": "没检测到可用的 ChatGPT（需已启动专用 Chrome 并登录），可切到「本地」模式"}), 400
+    confirmed = (request.form.get("understanding") or "").strip()
+    if not confirmed:
+        return jsonify({"ok": False, "msg": "还没有已确认的画面理解，请先做第一步「看图理解」"}), 400
+    intent = (request.form.get("intent") or "").strip()
+    presets = request.form.getlist("presets")
+    try:
+        img_paths = _helper_save_image(request.files.get("image"))
+    except Exception as e:
+        return jsonify({"ok": False, "msg": f"图片无法读取：{e}"}), 400
+    client = ChatGPTClient(log=log)
+    try:
+        client.connect(director_only=True)
+        reply = client.send(
+            client.director_page,
+            pe.helper_generate_after_confirm_prompt(confirmed, intent, presets),
+            image_paths=img_paths)
+        parsed = pe.parse_director_reply(reply)
+        return jsonify({"ok": True,
+                        "understanding_zh": parsed["understanding"] or confirmed,
+                        "prompt_zh": parsed["prompt_zh"],
+                        "prompt_en": parsed["prompt_en"]})
+    except ChatGPTError as e:
+        return jsonify({"ok": False, "msg": str(e)}), 502
+    finally:
+        client.close()
+
+
 # ======================================================================
 #  本地视觉模型（Ollama）——真·本地部署、离线、零 API key 的识图引擎（需求④）
 #  ChatGPT 是首选；这条是没 VPN/没账号时的兜底。未装 Ollama 时优雅降级 + 给一键指引。

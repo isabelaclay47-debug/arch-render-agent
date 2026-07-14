@@ -21,7 +21,15 @@ function setEngine(e){
     ? "将用 ChatGPT 看图并扩写（需已启动专用 Chrome 并登录）。"
     : "将用本机 Ollama 视觉模型离线识图，免账号免 VPN。未装可在下方一键准备。";
   $("visionSetup").innerHTML="";
-  if(e==="local"){ refreshVisionStatus(); if(pickedFile) runLocalVision(pickedFile); }
+  resetConfirm();                    // 换引擎：清掉上一版理解，重新看图理解
+  if(e==="local"){ refreshVisionStatus(); }
+}
+
+// 隐藏并清空「看图理解」确认区（换图/换引擎/重来时）
+function resetConfirm(){
+  const c=$("confirmCard"); if(c) c.classList.add("hidden");
+  const u=$("understandEdit"); if(u) u.value="";
+  const q=$("questionBox"); if(q) q.textContent="";
 }
 
 function onPick(f){
@@ -31,7 +39,7 @@ function onPick(f){
         onclick="event.stopPropagation();zoom(this.src)">`;
   $("descBox").textContent="";
   $("toRenderBtn").style.display="block";        // 有图了才能发给渲染器
-  if(engine==="local") runLocalVision(f);
+  resetConfirm();                                // 换了新图：清掉旧理解，重新看图理解
 }
 
 // ③ 把当前图发给渲染器当底图，跳转回主页自动接收
@@ -67,17 +75,69 @@ function selectedPresets(){
   return [...document.querySelectorAll("#presets input:checked")].map(el=>PRESETS[+el.value][1]);
 }
 
-async function generate(){
-  const intent=$("intent").value.trim();
-  const presets=selectedPresets();
+// ① 看图理解：先让 AI（按所选引擎）说出它看懂了什么，交给用户确认——不直接出提示词。
+async function understand(){
+  if(!pickedFile) return directGenerate();     // 没上传图 → 无需看图，直接按想法生成
+  const box=$("understandEdit");
+  $("confirmCard").classList.remove("hidden");
+  box.value="AI 正在看图理解中（首次可能较慢）…"; $("questionBox").textContent="";
+  const btn=event&&event.target; if(btn){ btn.disabled=true; }
+  try{
+    if(engine==="local"){
+      const fd=new FormData(); fd.append("image",pickedFile);
+      const j=await (await fetch("/api/helper_vision",{method:"POST",body:fd})).json();
+      if(j.ok){ imageDesc=(j.desc||"").trim(); box.value=imageDesc||"";
+                $("descBox").textContent="本地识图（"+j.model+"）完成，请在下方确认或修改。"; }
+      else{ box.value=""; box.placeholder="本地识图暂不可用，可直接在这里手写画面描述后认可。";
+            $("questionBox").textContent=j.msg||""; }
+    }else{
+      const fd=new FormData(); fd.append("image",pickedFile); fd.append("intent",$("intent").value.trim());
+      const r=await fetch("/api/helper_understand",{method:"POST",body:fd});
+      const j=await r.json();
+      if(!j.ok){ box.value=""; $("questionBox").textContent=j.msg||"看图理解失败"; return; }
+      box.value=(j.understanding_zh||"").trim();
+      $("questionBox").textContent = (j.questions||"").trim() ? ("AI 想跟你确认：\n"+j.questions) : "";
+    }
+    $("confirmCard").scrollIntoView({behavior:"smooth",block:"nearest"});
+  }catch(e){ box.value=""; $("questionBox").textContent="看图理解失败："+e.message; }
+  finally{ if(btn){ btn.disabled=false; } }
+}
+
+// ② 认可后生成：以用户确认/修正过的理解为准绳，据此产出提示词（真正和底图挂钩）。
+async function confirmGenerate(){
+  const confirmed=$("understandEdit").value.trim();
+  if(!confirmed){ alert("请先让 AI 看图理解，或在上面写一句这张图是什么，再认可"); return; }
+  const intent=$("intent").value.trim(), presets=selectedPresets();
+  const btn=event&&event.target; if(btn){ btn.disabled=true; btn.textContent="生成中…"; }
+  try{
+    if(engine==="local"){
+      imageDesc=confirmed;                        // 认可后的理解 = 底图画面，驱动本地拼装
+      const r=await fetch("/api/helper_build",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({intent,image_desc:confirmed,presets})});
+      show(await r.json());
+    }else{
+      const fd=new FormData();
+      fd.append("understanding",confirmed); fd.append("intent",intent);
+      presets.forEach(p=>fd.append("presets",p));
+      if(pickedFile) fd.append("image",pickedFile);
+      const r=await fetch("/api/helper_generate",{method:"POST",body:fd});
+      if(r.status>=400){ const j=await r.json(); alert(j.msg||"生成失败"); return; }
+      show(await r.json());
+    }
+  }catch(e){ alert("生成失败："+e.message); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent="✓ 认可，据此生成提示词"; } }
+}
+
+// 没上传图时的直接生成（保留旧行为：纯按想法+储备库拼/扩写）
+async function directGenerate(){
+  const intent=$("intent").value.trim(), presets=selectedPresets();
   if(engine==="local"){
     const r=await fetch("/api/helper_build",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({intent,image_desc:imageDesc,presets})});
+      body:JSON.stringify({intent,image_desc:"",presets})});
     show(await r.json());
   }else{
     const fd=new FormData();
     fd.append("draft_prompt",[intent,...presets].filter(Boolean).join("\n"));
-    if(pickedFile) fd.append("image",pickedFile);
     const r=await fetch("/api/helper_refine",{method:"POST",body:fd});
     if(r.status===409||r.status===400){ const j=await r.json(); alert(j.msg); return; }
     show(await r.json());
@@ -120,26 +180,6 @@ async function refinePrompt(){
     $("refineText").value="";
   }catch(e){ alert("改稿失败："+e.message); }
   finally{ if(btn){ btn.disabled=false; btn.textContent="↻ 按我的意见改一版"; } }
-}
-
-// 本地识图：交给后端的本机 Ollama 视觉模型（真·本地部署、离线、零 API key）。
-// 没装 Ollama / 没视觉模型时后端返回 ok=false + 安装指引，这里如实展示、优雅降级。
-async function runLocalVision(file){
-  $("descBox").textContent="本地识图中（首次可能较慢）…";
-  try{
-    const fd=new FormData(); fd.append("image",file);
-    const j=await (await fetch("/api/helper_vision",{method:"POST",body:fd})).json();
-    if(j.ok){
-      imageDesc=(j.desc||"").trim();
-      $("descBox").textContent="本地识图（"+j.model+"）：" + (imageDesc||"（未识别，可手动补充画面描述）");
-    }else{
-      imageDesc="";
-      $("descBox").textContent=j.msg||"本地识图暂不可用，可直接在想法里描述画面。";
-    }
-  }catch(e){
-    imageDesc="";
-    $("descBox").textContent="本地识图失败（"+e.message+"）。可直接在想法里描述画面后生成。";
-  }
 }
 
 function zoom(src){ $("lightboxImg").src=src; $("lightbox").style.display="flex"; }
@@ -221,8 +261,8 @@ async function switchVisionModel(name){
     await fetch("/api/set_vision_model",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({model:name})});
     $("descBox").textContent="已切换本地识图模型："+name+"（下次识图生效）";
-    // 已选过图就用新模型立刻重识一次，让切换「看得见」
-    if(pickedFile) runLocalVision(pickedFile);
+    // 已选过图就用新模型立刻重新「看图理解」一次，让切换「看得见」
+    if(pickedFile) understand();
   }catch(e){ alert("切换失败："+e.message); }
 }
 
