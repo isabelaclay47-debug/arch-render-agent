@@ -13,6 +13,12 @@ import json
 import os
 import subprocess
 import sys
+from importlib import metadata
+
+try:
+    from packaging.requirements import Requirement
+except ImportError:  # Fresh venvs may only expose pip's vendored copy.
+    from pip._vendor.packaging.requirements import Requirement
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE_FILE = os.path.join(APP_DIR, ".setup_state.json")
@@ -39,9 +45,38 @@ def _save_state(state: dict):
 def _pip_install(req_file: str) -> bool:
     if not os.path.isfile(req_file):
         return False
+    if _requirements_satisfied(req_file):
+        print(f"依赖已齐全，跳过联网安装：{os.path.basename(req_file)}")
+        return True
     print(f"安装依赖：{os.path.basename(req_file)} …")
     r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", req_file])
     return r.returncode == 0
+
+
+def _requirements_satisfied(req_file: str) -> bool:
+    """Return quickly when every declared distribution is already installed.
+
+    ``pip install -r`` may contact the package index even when nothing needs to
+    change.  That made the one-click launcher appear frozen on restricted or
+    slow networks.  Checking local package metadata first keeps normal starts
+    offline and instant; pip is only used for a genuine first install/update.
+    """
+    try:
+        with open(req_file, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            requirement = Requirement(line)
+            if requirement.marker and not requirement.marker.evaluate():
+                continue
+            installed = metadata.version(requirement.name)
+            if requirement.specifier and not requirement.specifier.contains(installed, prereleases=True):
+                return False
+        return True
+    except (OSError, ValueError, metadata.PackageNotFoundError):
+        return False
 
 
 def _decide_optional(state: dict, argv) -> bool:
@@ -53,6 +88,11 @@ def _decide_optional(state: dict, argv) -> bool:
         return False
     if "optional" in state:            # 已问过 → 直接用记住的选择，不再打扰
         return bool(state["optional"])
+    if "--ask-optional" not in argv:
+        # The one-click launcher must never stop at a hidden console question.
+        # Optional enhancement can still be installed later from the web UI;
+        # direct setup users can opt into the question with --ask-optional.
+        return False
     # 首次：交互询问一次
     if sys.stdin and sys.stdin.isatty():
         try:

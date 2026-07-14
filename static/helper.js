@@ -72,7 +72,8 @@ const drop=$("drop");
 drop.addEventListener("drop",e=>{const f=e.dataTransfer.files[0]; if(f&&f.type.startsWith("image/")) onPick(f);});
 
 function selectedPresets(){
-  return [...document.querySelectorAll("#presets input:checked")].map(el=>PRESETS[+el.value][1]);
+  return [...document.querySelectorAll("#presets input:checked")]
+    .map(el=>window.I18N ? I18N.t(PRESETS[+el.value][1]) : PRESETS[+el.value][1]);
 }
 
 // ① 看图理解：先让 AI（按所选引擎）说出它看懂了什么，交给用户确认——不直接出提示词。

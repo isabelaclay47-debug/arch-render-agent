@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>建筑渲染智能体</title>
+<script src="/static/i18n.js"></script>
 <style>
   /* ── 暗房工作台 · Dark Studio ───────────────────────────
      图像是画廊射灯下的作品：深炭底让渲染图浮起、琥珀金是唯一的光。
@@ -863,7 +864,8 @@ function selectPreset(index) {
 function appendRequirement(text) {
   const box = $("requirement");
   const prefix = box.value.trim() ? "\n" : "";
-  box.value = box.value.trim() + prefix + text;
+  const localized = window.I18N ? I18N.t(text) : text;
+  box.value = box.value.trim() + prefix + localized;
   box.focus();
 }
 
