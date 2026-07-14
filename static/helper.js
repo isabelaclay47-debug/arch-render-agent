@@ -154,7 +154,7 @@ async function refreshVisionStatus(){
   const setup=s.setup||{};
   if(setup.active){ renderVisionProgress(setup); startVisionPoll(); return; }
   if(_visionPoll){ clearInterval(_visionPoll); _visionPoll=null; }   // 安装结束，停轮询
-  if(s.ready){ box.innerHTML=`<span style="color:#3f7d3f">✓ 本地识图就绪（${esc(s.model)}）</span>`; return; }
+  if(s.ready){ renderVisionReady(s, box); return; }
   const opts=Object.entries(s.choices||{}).map(([m,desc])=>
     `<option value="${m}" ${m===s.default_model?"selected":""}>${esc(m)} — ${esc(desc)}</option>`).join("");
   const hint=s.installed ? "检测到 Ollama，但还没有识图模型。"
@@ -167,6 +167,54 @@ async function refreshVisionStatus(){
       ${failed}
     </div>`;
 }
+// 归一化模型名（与后端 _norm_model 一致：小写 + 去 - 和 .），用于判断某选择项是否已装
+function normId(s){ return String(s||"").toLowerCase().replace(/-/g,"").replace(/\./g,""); }
+
+// 本地识图就绪：显示「用哪个模型」的切换下拉（多个已装时）+「再装一个」入口。
+// 这修好用户报的「只能用一个、切换不了、另一个用不上」——就绪后不再是死状态。
+function renderVisionReady(s, box){
+  const avail=s.available||[];
+  // 重启后端会把选择清空；若本地存过且该模型已装，自动重新应用一次（持久化，重启不回退）
+  const saved=localStorage.getItem("arch:vision_model")||"";
+  if(saved && !s.selected_model && avail.includes(saved)){
+    fetch("/api/set_vision_model",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({model:saved})}).then(()=>refreshVisionStatus());
+    return;
+  }
+  const cur=s.model;   // 当前实际生效的模型
+  const switcher = avail.length>1
+    ? `<label class="muted" style="margin-left:8px">用哪个：</label>
+       <select id="visionSwitch" onchange="switchVisionModel(this.value)"
+         style="padding:5px;border:1px solid var(--sand);border-radius:3px;background:var(--field);color:var(--ink)">
+         ${avail.map(m=>`<option value="${esc(m)}" ${m===cur?"selected":""}>${esc(m)}</option>`).join("")}
+       </select>`
+    : `<span class="muted" style="margin-left:6px">（${esc(cur)}）</span>`;
+  // 选择项里还没装的 → 可以再下载一个，实现「两个都装、随时切」
+  const missing=Object.entries(s.choices||{}).filter(([k])=>
+    !avail.some(m=>{ const n=normId(m), h=normId(k); return n.includes(h)||h.includes(n); }));
+  const dl = missing.length ? `<div class="muted" style="margin-top:8px">想再装一个随时切换：
+      <select id="visionModel" style="padding:5px;border:1px solid var(--sand);border-radius:3px;background:var(--field);color:var(--ink)">
+        ${missing.map(([k,d])=>`<option value="${esc(k)}">${esc(k)} — ${esc(d)}</option>`).join("")}
+      </select>
+      <button class="go" style="width:auto;padding:6px 12px;margin-left:6px" onclick="startVisionSetup()">下载</button>
+    </div>` : "";
+  box.innerHTML=`<div style="background:var(--field);border:1px solid var(--sand);border-radius:4px;padding:10px">
+      <span style="color:#7fbf7f">✓ 本地识图就绪</span>${switcher}${dl}
+    </div>`;
+}
+
+// 切换当前用的本地识图模型（用户在下拉里选）——存 localStorage 重启不回退
+async function switchVisionModel(name){
+  try{ localStorage.setItem("arch:vision_model",name); }catch(e){}
+  try{
+    await fetch("/api/set_vision_model",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({model:name})});
+    $("descBox").textContent="已切换本地识图模型："+name+"（下次识图生效）";
+    // 已选过图就用新模型立刻重识一次，让切换「看得见」
+    if(pickedFile) runLocalVision(pickedFile);
+  }catch(e){ alert("切换失败："+e.message); }
+}
+
 async function startVisionSetup(){
   const model=$("visionModel")?$("visionModel").value:"";
   if(!confirm(`将下载并安装 Ollama（约几百 MB）+ 识图模型 ${model}，全部在本机、离线可复用。\n下载较大、请保持联网；期间可继续用 ChatGPT 引擎。\n\n现在开始吗？`)) return;
