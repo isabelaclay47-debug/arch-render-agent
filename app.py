@@ -1431,8 +1431,9 @@ def _ollama_models() -> list:
 
 
 def _norm_model(s) -> str:
-    # 去掉 . 和 - 再做包含匹配：Ollama 库名 qwen2.5vl 与写法 qwen2.5-vl 才能对上
-    return str(s or "").lower().replace("-", "").replace(".", "")
+    # 去掉 . - : 再做包含匹配：让 Ollama 库名 qwen2.5vl、写法 qwen2.5-vl、选择项 key
+    # qwen2.5vl:3b、实际长名 ...Qwen2.5-VL-3B...:latest 都能互相对上（否则"装了却判成没装"）。
+    return str(s or "").lower().replace("-", "").replace(".", "").replace(":", "")
 
 
 def _pick_vision_model(models: list, prefer: str = "") -> str:

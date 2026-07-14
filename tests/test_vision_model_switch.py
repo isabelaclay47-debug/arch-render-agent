@@ -47,6 +47,18 @@ def test_get_set_vision_model_roundtrip():
 
 # ---------- 已装视觉模型清单（供前端下拉） ----------
 
+def test_available_matches_real_modelscope_longnames():
+    # 用户真机就是这种 modelscope 长名（带 :latest、内嵌型号），必须都认出来，
+    # 否则"装了却判成没装"、老让重复下载、也进不了切换下拉。
+    real = ["modelscope.cn/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF:latest",
+            "modelscope.cn/ggml-org/moondream2-20250414-GGUF:latest"]
+    avail = appmod._vision_models_available(real)
+    assert len(avail) == 2
+    # 用长名做 prefer 能精确命中各自
+    assert appmod._pick_vision_model(real, prefer=real[1]) == real[1]
+    assert "moondream" in appmod._pick_vision_model(real, prefer="moondream").lower()
+
+
 def test_available_lists_only_vision_models():
     got = appmod._vision_models_available(
         ["moondream:latest", "qwen2.5vl:3b", "llama3:8b", "nomic-embed-text"])

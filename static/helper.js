@@ -154,6 +154,17 @@ async function refreshVisionStatus(){
   const setup=s.setup||{};
   if(setup.active){ renderVisionProgress(setup); startVisionPoll(); return; }
   if(_visionPoll){ clearInterval(_visionPoll); _visionPoll=null; }   // 安装结束，停轮询
+  // 新前端 + 旧后端（网页刷新了但 Python 服务没重启）：vision_status 不含 available
+  // 字段 → 切换/正确识别都用不了、还老让你下载。明确指出"要重启服务"，别再瞎试。
+  if(s.ready && !("available" in s)){
+    box.innerHTML=`<div style="background:var(--field);border:1px solid #a34242;border-radius:4px;padding:10px">
+        <div style="color:#d98a41;font-weight:600">⚠ 后台还是旧版本——网页更新了，但 Python 服务没重启</div>
+        <div class="muted" style="margin-top:6px;line-height:1.7">本地模型「切换」要重启服务才生效：<br>
+          ① 双击「停止服务.bat」（或关掉那个后台窗口）→ ② 双击「双击启动.bat」→ ③ 回来刷新本页。<br>
+          <b>只刷新浏览器不够</b>——网页文件是即时的，但后台程序要重启才换成新的。</div>
+      </div>`;
+    return;
+  }
   if(s.ready){ renderVisionReady(s, box); return; }
   const opts=Object.entries(s.choices||{}).map(([m,desc])=>
     `<option value="${m}" ${m===s.default_model?"selected":""}>${esc(m)} — ${esc(desc)}</option>`).join("");
@@ -168,7 +179,7 @@ async function refreshVisionStatus(){
     </div>`;
 }
 // 归一化模型名（与后端 _norm_model 一致：小写 + 去 - 和 .），用于判断某选择项是否已装
-function normId(s){ return String(s||"").toLowerCase().replace(/-/g,"").replace(/\./g,""); }
+function normId(s){ return String(s||"").toLowerCase().replace(/[-.:]/g,""); }
 
 // 本地识图就绪：显示「用哪个模型」的切换下拉（多个已装时）+「再装一个」入口。
 // 这修好用户报的「只能用一个、切换不了、另一个用不上」——就绪后不再是死状态。
