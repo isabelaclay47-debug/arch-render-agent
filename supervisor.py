@@ -97,7 +97,14 @@ def spawn_app():
     app_log = open(APP_LOG, "a", encoding="utf-8", buffering=1)
     app_log.write(f"\n[{_ts()}] ==== 启动 {TARGET}（解释器 {sys.executable}）====\n")
     app_log.flush()
-    kwargs = {"cwd": APP_DIR, "stdout": app_log, "stderr": subprocess.STDOUT}
+    # 强制子进程用 UTF-8：否则在 chcp 936(GBK) 的 Windows 上，app.py 里 print 含
+    # ⚠🔍 的日志会抛 UnicodeEncodeError，把整轮生图拖成「未预期的错误」。这里从
+    # 进程启动的第一字节就锁定 UTF-8，覆盖 app.py 自身 reconfigure 之前的窗口期。
+    child_env = dict(os.environ)
+    child_env["PYTHONUTF8"] = "1"
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    kwargs = {"cwd": APP_DIR, "stdout": app_log, "stderr": subprocess.STDOUT,
+              "env": child_env}
     if os.name == "nt":
         kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
     proc = subprocess.Popen([sys.executable, os.path.join(APP_DIR, TARGET)], **kwargs)

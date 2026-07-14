@@ -31,6 +31,18 @@ try:
 except ImportError:
     winreg = None
 
+# ---- Windows GBK 崩溃根治 ----
+# 本进程由 supervisor 以子进程拉起，stdout 被重定向到 logs\app.log。子进程会按
+# Windows 系统 locale（双击启动.bat 里 chcp 936 = GBK/cp936）自己决定 stdout 编码，
+# supervisor 那侧的 encoding=utf-8 传不进来。于是日志里的 ⚠🔍 等字符一 print 就抛
+# UnicodeEncodeError('gbk' codec can't encode character '⚠')，而 log() 在生成
+# 循环里被调用 → 整轮生图被当成「未预期的错误」失败。强制本进程走 UTF-8 根治。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.join(APP_DIR, "workspace")
 os.makedirs(WORKSPACE, exist_ok=True)
@@ -328,7 +340,15 @@ def log(msg: str):
     with _lock:
         S["logs"].append(line)
         S["logs"][:] = S["logs"][-200:]
-    print(line)
+    # 兜底：即使 stdout 编码异常也绝不让"打日志"这件小事崩掉生成流程。
+    try:
+        print(line)
+    except Exception:
+        try:
+            sys.stdout.buffer.write((line + "\n").encode("utf-8", "replace"))
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 
 def _wsl_windows_home() -> str:
