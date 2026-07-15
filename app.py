@@ -1360,6 +1360,11 @@ def api_net_check():
 # ⚠⚠ 待填：把三平台安装包的**真实直链**填到下面即可启用；某平台留空=该系统不显示安装
 #     按钮（只保留"自备网络"提示）。填好后无需改其它任何代码，立即生效。
 SATURN_NAME = "土星通讯"
+# 面板/下载页：连不上外网时打开它，让用户登录、按自己系统下载并安装客户端、连上网络。
+# 用户 2026-07-15 提供。留空=不显示「配置」按钮。
+SATURN_DASHBOARD_URL = "https://tuxingss.com/#/dashboard"
+# 直链安装包（可选、更省事）：若日后拿到三平台安装包**直链**填这里，按钮会改成
+# 后端下载+自动打开安装程序；留空则回退为「打开面板页」。
 SATURN_INSTALLERS = {
     "windows": "",   # 例：https://.../土星通讯-setup.exe
     "mac": "",       # 例：https://.../土星通讯.dmg 或 .pkg
@@ -1438,13 +1443,17 @@ def _run_saturn_install(url: str):
 
 @app.route("/api/saturn_status")
 def api_saturn_status():
-    """当前系统是否配了 土星通讯 安装包 + 安装进度，供前端决定是否显示「一键安装」并轮询。"""
+    """当前系统的 土星通讯 配置情况 + 安装进度，供前端决定是否显示「配置」按钮、走哪条路。
+    有直链安装包→后端下载安装；否则有面板页→前端打开面板让用户自助下载。"""
     system = _current_os()
-    url = SATURN_INSTALLERS.get(system, "")
+    installer = SATURN_INSTALLERS.get(system, "")
     with _saturn_lock:
         setup = dict(_saturn_setup)
     return jsonify({"ok": True, "os": system, "name": SATURN_NAME,
-                    "configured": bool(url), "setup": setup})
+                    "installer_configured": bool(installer),
+                    "dashboard_url": SATURN_DASHBOARD_URL,
+                    "configured": bool(installer or SATURN_DASHBOARD_URL),
+                    "setup": setup})
 
 
 @app.route("/api/saturn_install", methods=["POST"])

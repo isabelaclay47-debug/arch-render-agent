@@ -52,6 +52,13 @@ async function refreshSaturnBtn(){
 }
 async function installSaturn(){
   const txt=$("netBannerText"), btn=$("saturnBtn");
+  let s;
+  try{ s=await (await fetch("/api/saturn_status")).json(); }catch(e){ if(txt) txt.textContent="打开失败："+(e.message||e); return; }
+  if(!s.installer_configured && s.dashboard_url){
+    window.open(s.dashboard_url,"_blank");
+    if(txt) txt.textContent="已打开土星通讯页面：请在其中登录、按你的系统下载并安装客户端，连上网络后回来点「测试连接」。";
+    return;
+  }
   try{
     const j=await (await fetch("/api/saturn_install",{method:"POST"})).json();
     if(!j.ok){ if(txt) txt.textContent=j.msg||"安装失败"; return; }

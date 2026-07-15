@@ -21,6 +21,11 @@ def test_saturn_status_shape():
     assert j["name"] == "土星通讯"
     assert isinstance(j["configured"], bool)
     assert "setup" in j
+    # 面板页链接存在时，configured 为真、按钮会显示（前端据此打开面板）
+    assert "dashboard_url" in j
+    assert "installer_configured" in j
+    if j["dashboard_url"]:
+        assert j["configured"] is True
 
 
 def test_install_unconfigured_returns_400(monkeypatch):

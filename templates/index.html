@@ -332,7 +332,7 @@
 
 <div id="netBanner" style="display:none;background:#4a2f1a;border-bottom:1px solid #7a5a2a;color:#f3e6c8;padding:10px 18px;font-size:13px;line-height:1.55;text-align:center">
   <span id="netBannerText">本功能需要你自备可访问 ChatGPT / Google 的网络环境。请自行配置好网络后，点「测试连接」。</span>
-  <button class="btn-blue" id="saturnBtn" style="display:none;margin-left:12px" onclick="installSaturn()">一键安装土星通讯</button>
+  <button class="btn-blue" id="saturnBtn" style="display:none;margin-left:12px" onclick="installSaturn()">配置土星通讯</button>
   <button class="btn-blue" onclick="checkNet(true)" style="margin-left:12px">测试连接</button>
 </div>
 
@@ -1506,8 +1506,15 @@ async function refreshSaturnBtn() {
   } catch (e) { btn.style.display = "none"; }
 }
 async function installSaturn() {
-  // 用户自愿点：后端下载当前系统对应安装包并打开安装程序，前端轮询进度显示在横幅里。
+  // 用户自愿点。有直链安装包→后端下载+打开安装程序并轮询进度；只有面板页→打开面板让用户自助下载。
   const txt = $("netBannerText"), btn = $("saturnBtn");
+  let s;
+  try { s = await apiJson("/api/saturn_status"); } catch (e) { if (txt) txt.textContent = "打开失败：" + (e.message || e); return; }
+  if (!s.installer_configured && s.dashboard_url) {
+    window.open(s.dashboard_url, "_blank");
+    if (txt) txt.textContent = "已打开土星通讯页面：请在其中登录、按你的系统下载并安装客户端，连上网络后回来点「测试连接」。";
+    return;
+  }
   try {
     const j = await apiJson("/api/saturn_install", { method: "POST" });
     if (!j.ok) { if (txt) txt.textContent = j.msg || "安装失败"; return; }
