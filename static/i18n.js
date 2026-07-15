@@ -6,7 +6,6 @@
 
   const STORAGE_KEY = "archrender.lang";
   const HAN = /[\u3400-\u9fff]/;
-  const HAN_RUN = /[\u3400-\u9fff]+/g;
   let language = localStorage.getItem(STORAGE_KEY) === "en" ? "en" : "zh";
 
   const EXACT = {
@@ -19,6 +18,8 @@
     "检测": "Check",
     "启动 Chrome 去登录": "Launch Chrome to sign in",
     "提示词助手（无需账号）": "Prompt Assistant (no account required)",
+    "本功能需要你自备可访问 ChatGPT / Google 的网络环境。请自行配置好网络后，点「测试连接」。": "This feature needs your own network connection to ChatGPT and Google. Set up your connection, then click Test connection.",
+    "测试连接": "Test connection",
     "连网检查并更新到最新版": "Check online and update to the latest version",
     "检查更新": "Check for updates",
     "检查中…": "Checking…",
@@ -647,19 +648,20 @@
       const match = normalized.match(pattern);
       if (match) return render(match);
     }
+    /* Fallback for composed runtime strings not covered by EXACT/DYNAMIC. Splice known
+       phrases (longest first) into English. Then: if any Chinese still remains, we could
+       not translate the sentence cleanly — return the ORIGINAL untouched rather than a
+       half-English mix or a placeholder marker, both of which read as bugs. CJK
+       punctuation is normalized only once the splice fully succeeds, so a finished English
+       sentence never keeps Chinese punctuation. */
     let out = normalized;
     for (const source of PHRASES) {
       if (out.includes(source)) out = out.split(source).join(EXACT[source]);
     }
-    if (HAN.test(out)) {
-      /* Safety net: English mode must never leak untranslated UI. Known UI strings are
-         translated above; any future backend sentence gets a readable marker instead. */
-      out = out.replace(HAN_RUN, "[untranslated]");
-    }
-    out = out.replace(/，/g, ", ").replace(/。/g, ".").replace(/：/g, ": ")
+    if (HAN.test(out)) return value;
+    return out.replace(/，/g, ", ").replace(/。/g, ".").replace(/：/g, ": ")
       .replace(/；/g, "; ").replace(/（/g, "(").replace(/）/g, ")")
       .replace(/？/g, "?").replace(/[「」]/g, '"').replace(/、/g, ", ");
-    return out;
   }
 
   function t(value) {

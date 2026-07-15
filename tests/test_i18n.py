@@ -65,6 +65,22 @@ def test_language_choice_is_top_level_persistent_and_used_for_inserted_presets()
     assert "I18N.t(PRESETS[+el.value][1])" in helper
 
 
+def test_english_fallback_never_leaks_a_marker_or_frankenstein():
+    """机制回归：未覆盖的运行时中文串必须优雅回退原文，绝不出现 [untranslated] 标记，
+    也不做半英半中的碎句拼接（那会造成语病）。防止兜底逻辑被改回旧行为。"""
+    i18n = (ROOT / "static" / "i18n.js").read_text(encoding="utf-8")
+    assert "[untranslated]" not in i18n, "去掉 [untranslated] 标记；未覆盖串应回退原文"
+    # 兜底分支：残留中文时 return 原值（而非标记或拼接结果）
+    assert "if (HAN.test(out)) return value;" in i18n
+
+
+def test_vpn_safe_banner_strings_are_translated():
+    """VPN 安全版提示条的中文必须有英文条目，切 EN 才不会露中文/标记。"""
+    i18n = (ROOT / "static" / "i18n.js").read_text(encoding="utf-8")
+    assert "Test connection" in i18n
+    assert "本功能需要你自备可访问 ChatGPT / Google 的网络环境" in i18n
+
+
 def test_flask_serves_both_pages_and_the_language_asset():
     import app as app_module
 

@@ -502,6 +502,7 @@ class GeminiClient:
 
         # 阶段二：等生成结束（停止按钮消失并保持消失）
         quiet = 0
+        dumped = False
         while time.time() < deadline:
             self._raise_if_cancelled()   # 用户提前结束 → 立即中止(#6b)
             if check_nudge():
@@ -517,14 +518,26 @@ class GeminiClient:
                 if quiet >= need:
                     if not expect_image or self._last_image_handle(page) is not None:
                         return
-                    if time.time() - last_activity > self.RELOAD_INTERVAL:
+                    # 生成流已停但没抓到图。先判断是不是图还在加载（最常见的假死误判）：
+                    # 是 → 视作仍在活动、继续等它 decode 完，别 reload 把已到的图刷掉。
+                    if expect_image and self._image_loading_pending(page):
+                        last_activity = time.time()
+                        quiet = need         # 停在阈值：图一 load 完下一圈立即 return
+                    elif time.time() - last_activity > self.RELOAD_INTERVAL:
+                        if expect_image and not dumped:
+                            self._dump_dom(page, "生成结束但未抓到生成图")
+                            dumped = True
                         reload_page("生成似乎结束但图片没出现，页面可能假死")
                         quiet = 0
             if force_ceiling():
                 quiet = 0
             page.wait_for_timeout(1000)
         if expect_image:
-            raise GeminiError(f"等了 {timeout}s 图片仍未生成完成（可能额度用尽或排队），请到 Chrome 里确认。")
+            self._dump_dom(page, "超时仍未抓到生成图")
+            raise GeminiError(
+                f"等了 {timeout}s 图片仍未生成完成（可能额度用尽或排队），请到 Chrome 里确认。"
+                "若 Chrome 里其实已经出图却抓不到，多半是 Gemini 网页版式变了——"
+                "已在 logs/ 存了页面快照，发给开发者可精准修复选择器。")
 
     # ---------- 读回复 / 下载图 ----------
 
@@ -576,6 +589,59 @@ class GeminiClient:
             except Exception:
                 continue
         return best
+
+    def _image_loading_pending(self, page) -> bool:
+        """生成流已停，但最后一条回复里存在生成图 <img> 却尚未加载完成
+        （complete=false 或 naturalWidth=0）。这是最常见的「假死」误判来源：图在、
+        只是还没解码好。返回 True 时应继续等它加载完，别去 reload 把已到的图刷掉。"""
+        try:
+            return bool(page.evaluate(
+                """() => {
+                    const resp = document.querySelectorAll('model-response, .response-container');
+                    const root = resp.length ? resp[resp.length - 1] : document;
+                    for (const el of root.querySelectorAll('img')) {
+                        const isPreview = !!el.closest('user-query-file-preview')
+                            || (typeof el.className === 'string' && el.className.includes('preview-image'))
+                            || el.alt === '所上传图片的预览图';
+                        if (isPreview) continue;
+                        const src = el.currentSrc || el.src || '';
+                        if (!src) continue;
+                        if (!el.complete || el.naturalWidth === 0) return true;  // 有图但没加载完
+                    }
+                    return false;
+                }"""))
+        except Exception:
+            return False
+
+    def _dump_dom(self, page, reason: str):
+        """抓图失败时把最后一条回复的 DOM + 所有图片信息落盘到 logs/，便于日后精准校准
+        gen_image 选择器（我这边看不到真实 Gemini 页面，靠这份快照就能对症修）。"""
+        try:
+            import os
+            os.makedirs("logs", exist_ok=True)
+            info = page.evaluate(
+                """() => {
+                    const resp = document.querySelectorAll('model-response, .response-container');
+                    const root = resp.length ? resp[resp.length - 1] : document.body;
+                    const imgs = [...document.querySelectorAll('img')].map(el => ({
+                        alt: el.alt || '',
+                        cls: (typeof el.className === 'string' ? el.className : ''),
+                        w: el.naturalWidth, h: el.naturalHeight, complete: el.complete,
+                        src: (el.currentSrc || el.src || '').slice(0, 80),
+                        parent: el.parentElement ? el.parentElement.tagName.toLowerCase() : ''
+                    }));
+                    return { html: (root.outerHTML || '').slice(0, 200000), imgs };
+                }""")
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            path = os.path.join("logs", f"gemini_dump_{ts}.html")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"<!-- reason: {reason} -->\n")
+                f.write("<!-- imgs: " + repr(info.get("imgs")) + " -->\n")
+                f.write(info.get("html", ""))
+            self.log(f"（已存 Gemini 页面快照到 {path}，若确已出图却抓不到，把它发给开发者可精准修复）")
+            return path
+        except Exception:
+            return None
 
     def download_last_image(self, page, save_path: str) -> bool:
         """把最后一条回复里的生成图存到本地。fetch 失败时用 canvas 兜底。"""

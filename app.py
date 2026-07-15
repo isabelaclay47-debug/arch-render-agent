@@ -11,6 +11,7 @@ import base64
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -1298,6 +1299,40 @@ def api_launch_chrome():
                       f"--user-data-dir={_chrome_profile_arg(chrome)}",
                       "--no-first-run", "--no-default-browser-check", *urls])
     return jsonify({"ok": True})
+
+
+def _net_hosts_for_engine():
+    """当前生图引擎需要能连通的外网主机（不含端口）。ChatGPT 引擎只需 chatgpt.com；
+    Gemini 引擎还要 gemini.google.com（导演仍走 ChatGPT，故两者都要）。"""
+    if get_image_engine() == "gemini":
+        return ["gemini.google.com", "chatgpt.com"]
+    return ["chatgpt.com"]
+
+
+def _host_reachable(host, port=443, timeout=4.0):
+    """纯 TCP 连通性探测：能在 timeout 内握手到 host:443 即视为可达。
+    只回答「网络能不能到达该站」——不发任何应用层请求、不带凭据、不改系统网络（合规红线）。"""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+@app.route("/api/net_check")
+def api_net_check():
+    """VPN 安全版：静默探测当前引擎所需外网是否可达。
+    能连 → 前端完全不打扰；连不上 → 前端弹一句合规提示 + 「测试连接」按钮。
+    绝不分发/配置 VPN，只做连通性探测（合规红线，已与用户确认）。"""
+    hosts = _net_hosts_for_engine()
+    results = {h: _host_reachable(h) for h in hosts}
+    return jsonify({
+        "ok": True,
+        "engine": get_image_engine(),
+        "hosts": results,
+        "reachable": all(results.values()),
+        "unreachable": [h for h, ok in results.items() if not ok],
+    })
 
 
 @app.route("/api/nudge", methods=["POST"])
