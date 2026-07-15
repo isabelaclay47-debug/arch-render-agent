@@ -532,8 +532,11 @@ class ChatGPTClient:
                     if expect_image:
                         if self._last_image_handle(page) is not None:
                             return
-                        # 输出停了却没有图——典型的网页假死，刷新一下图往往就出来了
-                        if time.time() - last_activity > self.RELOAD_INTERVAL:
+                        # 输出停了却没抓到图：先看是不是图还在解码（naturalWidth=0）——是则继续等它
+                        # load 完，别急着刷新（假死误判的常见来源）。真没图再走原来的刷新兜底。
+                        if self._image_loading_pending(page):
+                            last_activity = time.time()
+                        elif time.time() - last_activity > self.RELOAD_INTERVAL:
                             stuck_escalate("生成似乎结束但图片没出现，页面可能假死")
                             quiet = 0
                     else:
@@ -613,6 +616,32 @@ class ChatGPTClient:
         if best is None:
             consider(page.locator("img"))
         return best
+
+    def _image_loading_pending(self, page) -> bool:
+        """生成流已停，但最后一条助手消息（或带「生成」alt 的图）里存在 <img> 却尚未加载完成
+        （complete=false 或 naturalWidth=0）。这是「假死」误判的常见来源：图其实在、只是还没
+        解码好。返回 True 时应继续等它 load 完，别急着刷新把已到的图刷掉。"""
+        try:
+            return bool(page.evaluate(
+                """() => {
+                    const notLoaded = el => {
+                        const src = el.currentSrc || el.src || '';
+                        return src && (!el.complete || el.naturalWidth === 0);
+                    };
+                    const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+                    if (msgs.length) {
+                        for (const el of msgs[msgs.length - 1].querySelectorAll('img')) {
+                            if (notLoaded(el)) return true;
+                        }
+                    }
+                    for (const el of document.querySelectorAll('img[alt*="生成"], img[alt*="generated" i]')) {
+                        if (el.closest('[data-message-author-role="user"]')) continue;
+                        if (notLoaded(el)) return true;
+                    }
+                    return false;
+                }"""))
+        except Exception:
+            return False
 
     def download_last_image(self, page, save_path: str) -> bool:
         """把最后一条回复里的生成图存到本地。fetch 失败时用 canvas 兜底。"""

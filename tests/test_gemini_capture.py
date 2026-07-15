@@ -52,3 +52,12 @@ def test_dump_dom_writes_snapshot(tmp_path, monkeypatch):
 def test_dump_dom_returns_none_on_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert _client()._dump_dom(FakePage(raise_=True), "x") is None
+
+
+def test_chatgpt_image_pending_same_race_guard():
+    # ChatGPT 引擎有同一加载竞态，护栏行为须一致：图在解码→True；无图→False；出错→False
+    from chatgpt_client import ChatGPTClient
+    c = ChatGPTClient(log=lambda *a, **k: None)
+    assert c._image_loading_pending(FakePage(True)) is True
+    assert c._image_loading_pending(FakePage(False)) is False
+    assert c._image_loading_pending(FakePage(raise_=True)) is False
