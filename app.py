@@ -44,7 +44,16 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# 资源/数据目录解析——同时兼容「源码直接跑」与「PyInstaller 打包后的原生 exe」。
+# · 非冻结（源码/一键脚本）：APP_DIR=RES_DIR=本文件所在目录（与历史行为完全一致）。
+# · 冻结（原生安装包）：可写数据(workspace 等)放 exe 同级目录（持久，_MEIPASS 退出即删不能放这）；
+#   只读打包资源(templates/static)在解包临时目录 sys._MEIPASS。
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(os.path.abspath(sys.executable))   # 可写、持久
+    RES_DIR = getattr(sys, "_MEIPASS", APP_DIR)                  # 只读打包资源
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    RES_DIR = APP_DIR
 WORKSPACE = os.path.join(APP_DIR, "workspace")
 os.makedirs(WORKSPACE, exist_ok=True)
 
@@ -103,7 +112,9 @@ CHROME_PATHS = [
 ]
 CHROME_PROFILE = os.path.join(APP_DIR, "chrome-profile")
 
-app = Flask(__name__)
+app = Flask(__name__,
+            template_folder=os.path.join(RES_DIR, "templates"),
+            static_folder=os.path.join(RES_DIR, "static"))
 
 # ---------------- 会话状态（单会话即可） ----------------
 S = {
@@ -1323,8 +1334,12 @@ def _host_reachable(host, port=443, timeout=4.0):
 def api_net_check():
     """VPN 安全版：静默探测当前引擎所需外网是否可达。
     能连 → 前端完全不打扰；连不上 → 前端弹一句合规提示 + 「测试连接」按钮。
-    绝不分发/配置 VPN，只做连通性探测（合规红线，已与用户确认）。"""
-    hosts = _net_hosts_for_engine()
+    绝不分发/配置 VPN，只做连通性探测（合规红线，已与用户确认）。
+    `?target=chatgpt`：助手页 ChatGPT 模式只依赖 chatgpt.com，与主页渲染引擎无关，用它覆盖。"""
+    if request.args.get("target") == "chatgpt":
+        hosts = ["chatgpt.com"]
+    else:
+        hosts = _net_hosts_for_engine()
     results = {h: _host_reachable(h) for h in hosts}
     return jsonify({
         "ok": True,
@@ -1363,7 +1378,7 @@ def helper_page():
 
 @app.route("/vendor/<path:sub>")
 def vendor_assets(sub):
-    return send_from_directory(os.path.join(APP_DIR, "static", "vendor"), sub)
+    return send_from_directory(os.path.join(RES_DIR, "static", "vendor"), sub)
 
 
 @app.route("/models/<path:sub>")

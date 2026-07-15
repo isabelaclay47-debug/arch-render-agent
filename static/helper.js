@@ -23,6 +23,18 @@ function setEngine(e){
   $("visionSetup").innerHTML="";
   resetConfirm();                    // 换引擎：清掉上一版理解，重新看图理解
   if(e==="local"){ refreshVisionStatus(); }
+  checkNet();                        // VPN 安全版：chat 模式要网络才探测并提示，local 模式静默隐藏
+}
+
+// VPN 安全版：ChatGPT 模式静默探测 chatgpt.com 是否可达。能连→不打扰；连不上→提示条。
+// local（离线识图）模式不需要网络，直接隐藏。
+async function checkNet(userClicked){
+  const banner=$("netBanner"); if(!banner) return;
+  if(engine!=="chat"){ banner.style.display="none"; return; }
+  try{
+    const j=await (await fetch("/api/net_check?target=chatgpt")).json();
+    banner.style.display = j.reachable ? "none" : "block";
+  }catch(e){ if(userClicked) banner.style.display="block"; }
 }
 
 // 隐藏并清空「看图理解」确认区（换图/换引擎/重来时）

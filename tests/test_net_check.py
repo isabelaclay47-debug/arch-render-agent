@@ -39,6 +39,14 @@ def test_gemini_engine_also_requires_google(monkeypatch):
     assert j["reachable"] is True
 
 
+def test_target_chatgpt_overrides_render_engine(monkeypatch):
+    # 助手页 chat 模式：即便主页渲染引擎是 gemini，target=chatgpt 也只探 chatgpt.com
+    monkeypatch.setattr(app_module, "_host_reachable", lambda host, *a, **k: True)
+    monkeypatch.setattr(app_module, "get_image_engine", lambda: "gemini")
+    j = _client().get("/api/net_check?target=chatgpt").get_json()
+    assert set(j["hosts"]) == {"chatgpt.com"}
+
+
 def test_probe_never_raises_on_bad_host(monkeypatch):
     # 真实探测：不可解析的主机必须优雅返回 False，不抛异常
     assert app_module._host_reachable("nonexistent.invalid", timeout=1) is False
