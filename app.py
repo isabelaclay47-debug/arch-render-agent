@@ -1350,6 +1350,115 @@ def api_net_check():
     })
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 土星通讯（VPN）一键安装：连不上外网时，让用户**自愿**一键下载并打开安装程序。
+# 后端在用户机器上跑，故自动判定当前系统、只下发对应平台的安装包（三平台都支持）。
+#
+# ⚠⚠ 待填：把三平台安装包的**真实直链**填到下面即可启用；某平台留空=该系统不显示安装
+#     按钮（只保留"自备网络"提示）。填好后无需改其它任何代码，立即生效。
+SATURN_NAME = "土星通讯"
+SATURN_INSTALLERS = {
+    "windows": "",   # 例：https://.../土星通讯-setup.exe
+    "mac": "",       # 例：https://.../土星通讯.dmg 或 .pkg
+    "linux": "",     # 例：https://.../土星通讯.AppImage 或 .deb
+}
+
+_saturn_setup = {"active": False, "stage": "", "msg": "", "done": False, "ok": False, "error": ""}
+_saturn_lock = threading.Lock()
+
+
+def _current_os() -> str:
+    """当前运行系统：windows / mac / linux（后端在用户机上跑，判的就是用户的系统）。"""
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "mac"
+    return "linux"
+
+
+def _saturn_set(**kw):
+    with _saturn_lock:
+        _saturn_setup.update(kw)
+
+
+def _download_file(url: str, dest: str, timeout: int = 900) -> str:
+    """流式下载到 dest（先写 .part 再原子改名），失败抛异常。"""
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + ".part"
+    with requests.get(url, stream=True, timeout=timeout) as r:
+        r.raise_for_status()
+        with open(tmp, "wb") as f:
+            for chunk in r.iter_content(65536):
+                if chunk:
+                    f.write(chunk)
+    os.replace(tmp, dest)
+    return dest
+
+
+def _launch_installer(path: str):
+    """按当前系统打开下载好的安装程序，让用户点完成安装。"""
+    system = _current_os()
+    if system == "windows":
+        os.startfile(path)                       # noqa: WPS  Windows 专有，仅此分支执行
+    elif system == "mac":
+        subprocess.Popen(["open", path])         # .dmg 挂载 / .pkg 起安装器
+    else:
+        try:
+            os.chmod(path, 0o755)
+        except Exception:
+            pass
+        if path.lower().endswith(".appimage"):
+            subprocess.Popen([path])
+        else:
+            subprocess.Popen(["xdg-open", path])  # .deb/.run 等交给系统处理
+
+
+def _run_saturn_install(url: str):
+    try:
+        _saturn_set(active=True, stage="downloading",
+                    msg=f"正在下载 {SATURN_NAME} 安装包…", done=False, ok=False, error="")
+        fname = (url.split("?")[0].rstrip("/").split("/")[-1] or "saturn-installer")
+        dest = os.path.join(WORKSPACE, "_saturn", fname)
+        _download_file(url, dest)
+        _saturn_set(stage="launching",
+                    msg=f"下载完成，正在打开 {SATURN_NAME} 安装程序，请按提示完成安装…")
+        _launch_installer(dest)
+        _saturn_set(stage="done", done=True, ok=True,
+                    msg=f"{SATURN_NAME} 安装程序已打开。装好并连上网络后，回来点「测试连接」。")
+    except Exception as e:
+        _saturn_set(stage="error", done=True, ok=False, error=str(e),
+                    msg=f"下载/打开 {SATURN_NAME} 失败：{e}")
+    finally:
+        with _saturn_lock:
+            _saturn_setup["active"] = False
+
+
+@app.route("/api/saturn_status")
+def api_saturn_status():
+    """当前系统是否配了 土星通讯 安装包 + 安装进度，供前端决定是否显示「一键安装」并轮询。"""
+    system = _current_os()
+    url = SATURN_INSTALLERS.get(system, "")
+    with _saturn_lock:
+        setup = dict(_saturn_setup)
+    return jsonify({"ok": True, "os": system, "name": SATURN_NAME,
+                    "configured": bool(url), "setup": setup})
+
+
+@app.route("/api/saturn_install", methods=["POST"])
+def api_saturn_install():
+    """用户**自愿**点「一键安装土星通讯」后触发：下载当前系统对应安装包并打开安装程序。"""
+    system = _current_os()
+    url = SATURN_INSTALLERS.get(system, "")
+    if not url:
+        return jsonify({"ok": False,
+                        "msg": f"暂未配置 {system} 版 {SATURN_NAME} 安装包"}), 400
+    with _saturn_lock:
+        if _saturn_setup["active"]:
+            return jsonify({"ok": True, "msg": "安装已在进行中，请看进度。"})
+    threading.Thread(target=_run_saturn_install, args=(url,), daemon=True).start()
+    return jsonify({"ok": True, "msg": f"已开始下载 {SATURN_NAME}，界面会显示进度。"})
+
+
 @app.route("/api/nudge", methods=["POST"])
 def api_nudge():
     """ChatGPT 网页卡死时的人工干预：正在等待时刷新重查；'stalled' 暂停时重试本轮。"""
