@@ -13,6 +13,7 @@ import os
 import shutil
 import socket
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import sys
 import threading
 import time
@@ -1340,7 +1341,9 @@ def api_net_check():
         hosts = ["chatgpt.com"]
     else:
         hosts = _net_hosts_for_engine()
-    results = {h: _host_reachable(h) for h in hosts}
+    # 并行探测：多个站点同时探，连不上时总耗时≈单站超时(≈4s)而非累加(8s+)，按钮少等一半。
+    with ThreadPoolExecutor(max_workers=max(1, len(hosts))) as ex:
+        results = dict(zip(hosts, ex.map(_host_reachable, hosts)))
     return jsonify({
         "ok": True,
         "engine": get_image_engine(),

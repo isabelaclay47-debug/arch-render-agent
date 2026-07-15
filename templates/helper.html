@@ -26,7 +26,8 @@
 </style></head><body>
 <div id="netBanner" style="display:none;background:#4a2f1a;border:1px solid #7a5a2a;color:#f3e6c8;padding:10px 16px;font-size:13px;line-height:1.55;border-radius:8px;margin-bottom:14px;text-align:center">
   <span id="netBannerText">本功能需要你自备可访问 ChatGPT / Google 的网络环境。请自行配置好网络后，点「测试连接」。</span>
-  <button class="go" style="margin-left:12px;padding:4px 12px;display:inline-block;width:auto" onclick="checkNet(true)">测试连接</button>
+  <button class="go" id="saturnBtn" style="display:none;margin-left:8px;padding:4px 12px;width:auto" onclick="installSaturn()">一键安装土星通讯</button>
+  <button class="go" style="margin-left:8px;padding:4px 12px;display:inline-block;width:auto" onclick="checkNet(true)">测试连接</button>
 </div>
 <h1>提示词助手 <span class="muted">— 拖图进来，帮你写出专业提示词</span></h1>
 

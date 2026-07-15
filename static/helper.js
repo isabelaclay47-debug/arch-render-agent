@@ -40,10 +40,29 @@ async function checkNet(userClicked){
       if(userClicked && txt) txt.textContent="✓ 已连通，可以开始使用了。";
       setTimeout(()=>{ banner.style.display="none"; if(txt) txt.textContent=netMsgDefault; },1200);
     }else{
-      banner.style.display="block";
+      banner.style.display="block"; refreshSaturnBtn();
       if(userClicked && txt) txt.textContent="仍然连不上 chatgpt.com——请确认已配置并连上可访问它的网络后再试。";
     }
-  }catch(e){ banner.style.display="block"; if(userClicked && txt) txt.textContent="检测失败："+(e.message||e); }
+  }catch(e){ banner.style.display="block"; refreshSaturnBtn(); if(userClicked && txt) txt.textContent="检测失败："+(e.message||e); }
+}
+async function refreshSaturnBtn(){
+  const btn=$("saturnBtn"); if(!btn) return;
+  try{ const j=await (await fetch("/api/saturn_status")).json(); btn.style.display=j.configured?"inline-block":"none"; }
+  catch(e){ btn.style.display="none"; }
+}
+async function installSaturn(){
+  const txt=$("netBannerText"), btn=$("saturnBtn");
+  try{
+    const j=await (await fetch("/api/saturn_install",{method:"POST"})).json();
+    if(!j.ok){ if(txt) txt.textContent=j.msg||"安装失败"; return; }
+  }catch(e){ if(txt) txt.textContent="启动安装失败："+(e.message||e); return; }
+  if(btn) btn.disabled=true;
+  const poll=setInterval(async()=>{
+    try{ const s=await (await fetch("/api/saturn_status")).json(); const st=s.setup||{};
+      if(st.msg && txt) txt.textContent=st.msg;
+      if(st.done){ clearInterval(poll); if(btn) btn.disabled=false; }
+    }catch(e){}
+  },1500);
 }
 
 // 隐藏并清空「看图理解」确认区（换图/换引擎/重来时）
