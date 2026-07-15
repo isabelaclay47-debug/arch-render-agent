@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
-**Turn a rough massing screenshot into a photorealistic architectural render — automatically, faithfully, and on your own ChatGPT quota.**
+**Turn a rough massing screenshot into a photorealistic architectural render — automatically, faithfully, and on your own ChatGPT or Gemini quota.**
 
 ArchRenderAgent drives a Chrome tab you're already logged into and runs the full loop for you: understand the brief → write a professional prompt → generate → compare against your base image for tampering → refine. You stay in control: confirm the prompt before any credits are spent, mark up regions to fix by hand, steer with feedback, or export at any time.
 
@@ -22,9 +22,13 @@ ArchRenderAgent drives a Chrome tab you're already logged into and runs the full
 - **🗣️ Chinese in, English out.** You work in Chinese in the UI; the prompt actually sent to ChatGPT is English (image models are more reliable in English).
 - **🖌️ Hands‑on region edits.** Mark exactly what to change with freehand, straight line, rectangle, polygon lasso, smear, or eraser — the AI edits only inside the mark and leaves everything else untouched.
 - **🧱 A curated ArchViz prompt library** with precise material vocabulary (board‑formed concrete, Shou Sugi Ban, Corten, zinc standing seam…), lighting scenarios, camera guidance and categorized negative prompts — always topped with a non‑negotiable quality/faithfulness baseline.
-- **🛡️ Resilient.** Text steps auto‑retry when the ChatGPT web UI stalls, so one hiccup no longer kills the whole run.
+- **🎨 Two image engines, your subscription.** Generate with **ChatGPT** or with **Gemini's nano‑banana** — both drive a browser you're logged into and use your own subscription, no API key. Text reasoning (understanding, prompts, faithfulness checks) always runs on ChatGPT.
+- **🔍 Offline vision, no account.** The Prompt Assistant can read your image with a **local Ollama vision model** — fully offline, no account and no VPN — or with ChatGPT when you prefer.
+- **🖼️ Local quality boost.** Final deliverables can be upscaled to 2K/4K/8K with a local super‑resolution model (Swin2SR) and de‑watermarked locally — offline, only on the final image.
+- **🌐 Bilingual UI (中 / EN).** A persistent ZH/EN toggle translates the whole interface; your choice is remembered. Model‑facing prompts stay English regardless.
+- **🛡️ Resilient.** Both engines auto‑recover when the web UI stalls: a generated image that hasn't finished decoding is no longer mistaken for a freeze, and genuinely stuck pages refresh and retry — one hiccup no longer kills the whole run.
 
-> Note: the operator UI is currently in Chinese; all model‑facing prompts are English.
+> Note: model‑facing prompts are always English; the operator UI can switch between Chinese and English.
 
 ---
 
