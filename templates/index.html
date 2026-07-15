@@ -1472,14 +1472,26 @@ async function checkConn() {
   }
   checking = false;
 }
+let netMsgDefault = "";
 async function checkNet(userClicked) {
-  // VPN 安全版：静默探测当前引擎所需外网是否可达。能连→完全不打扰；连不上→显示合规提示条。
+  // VPN 安全版：静默探测当前引擎所需外网是否可达。能连→完全不打扰；连不上→显示提示条。
+  // userClicked=用户点「测试连接」：必须给可见反馈（检测中/已连通/仍连不上），否则看着像死按钮。
+  const banner = $("netBanner"), txt = $("netBannerText");
+  if (!banner) return;
+  if (txt && !netMsgDefault) netMsgDefault = txt.textContent;
+  if (userClicked && txt) txt.textContent = "检测网络中…（约几秒）";
   try {
     const j = await apiJson("/api/net_check");
-    $("netBanner").style.display = j.reachable ? "none" : "block";
+    if (j.reachable) {
+      if (userClicked && txt) txt.textContent = "✓ 已连通，可以开始使用了。";
+      setTimeout(() => { banner.style.display = "none"; if (txt) txt.textContent = netMsgDefault; }, 1200);
+    } else {
+      banner.style.display = "block";
+      if (userClicked && txt) txt.textContent = "仍然连不上（" + (j.unreachable || []).join(", ") + "）——请确认已配置并连上可访问它们的网络后再试。";
+    }
   } catch (e) {
-    // 探测本身失败不打扰用户；除非是用户主动点「测试连接」才提示仍未连通
-    if (userClicked) $("netBanner").style.display = "block";
+    banner.style.display = "block";
+    if (userClicked && txt) txt.textContent = "检测失败：" + (e.message || e);
   }
 }
 async function launchChrome() {

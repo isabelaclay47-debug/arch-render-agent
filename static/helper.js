@@ -28,13 +28,22 @@ function setEngine(e){
 
 // VPN 安全版：ChatGPT 模式静默探测 chatgpt.com 是否可达。能连→不打扰；连不上→提示条。
 // local（离线识图）模式不需要网络，直接隐藏。
+let netMsgDefault="";
 async function checkNet(userClicked){
-  const banner=$("netBanner"); if(!banner) return;
-  if(engine!=="chat"){ banner.style.display="none"; return; }
+  const banner=$("netBanner"), txt=$("netBannerText"); if(!banner) return;
+  if(txt && !netMsgDefault) netMsgDefault=txt.textContent;
+  if(engine!=="chat"){ banner.style.display="none"; return; }   // 本地识图不需网络
+  if(userClicked && txt) txt.textContent="检测网络中…（约几秒）";
   try{
     const j=await (await fetch("/api/net_check?target=chatgpt")).json();
-    banner.style.display = j.reachable ? "none" : "block";
-  }catch(e){ if(userClicked) banner.style.display="block"; }
+    if(j.reachable){
+      if(userClicked && txt) txt.textContent="✓ 已连通，可以开始使用了。";
+      setTimeout(()=>{ banner.style.display="none"; if(txt) txt.textContent=netMsgDefault; },1200);
+    }else{
+      banner.style.display="block";
+      if(userClicked && txt) txt.textContent="仍然连不上 chatgpt.com——请确认已配置并连上可访问它的网络后再试。";
+    }
+  }catch(e){ banner.style.display="block"; if(userClicked && txt) txt.textContent="检测失败："+(e.message||e); }
 }
 
 // 隐藏并清空「看图理解」确认区（换图/换引擎/重来时）
