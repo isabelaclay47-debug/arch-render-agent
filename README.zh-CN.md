@@ -10,6 +10,18 @@
 
 ---
 
+## 下载即用（非程序员）
+
+不想 clone 代码？到 [**Releases 发布页**](../../releases/latest) 直接下打包好的压缩包：
+
+- **Windows** — 下 `ArchRenderAgent-windows-*.zip`，解压，双击 `双击启动.bat`。
+- **macOS** — 下 `ArchRenderAgent-mac-*.zip`，解压，双击 `双击启动-Mac.command`（首次右键 → 打开 → 允许一次）。
+- **Linux** — 下 `ArchRenderAgent-linux-*.zip`，解压，照包内 `① 先看我-linux.txt` 做。
+
+首次启动会自动装环境、并让你**登录一次 ChatGPT**（那个 Chrome 窗口别关）。想用源码跑见下方[快速开始](#快速开始)。
+
+---
+
 ## 快速开始
 
 **前置条件**：Python 3.10+、Google Chrome、一个能在网页版 ChatGPT 生图的账号。

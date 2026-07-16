@@ -14,6 +14,18 @@ ArchRenderAgent drives a Chrome tab you're already logged into and runs the full
 
 ---
 
+## Download & run (no coding)
+
+Don't want to clone? Grab a ready-to-run package from the [**Releases**](../../releases/latest) page:
+
+- **Windows** — download `ArchRenderAgent-windows-*.zip`, unzip, double-click `双击启动.bat`.
+- **macOS** — download `ArchRenderAgent-mac-*.zip`, unzip, double-click `双击启动-Mac.command` (first time: right-click → Open).
+- **Linux** — download `ArchRenderAgent-linux-*.zip`, unzip, follow the included `① 先看我-linux.txt`.
+
+First launch auto-installs the environment and asks you to **log into ChatGPT once** (keep that Chrome window open). Prefer the source? See [Quick start](#quick-start) below.
+
+---
+
 ## Why it's different
 
 - **🎯 Faithful by design.** Every round is compared against your original base image. Building form, floor count, windows, straight lines and text are locked down — the model improves materials, light and entourage, not your geometry.
