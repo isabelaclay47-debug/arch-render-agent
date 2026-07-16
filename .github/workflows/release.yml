@@ -42,5 +42,5 @@ jobs:
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" dist/*.zip \
             --target "${GITHUB_SHA}" \
-            --title "建筑渲染智能体 $TAG" \
-            --notes "各平台单独下载：Windows=*-windows-*.zip / macOS=*-mac-*.zip / Linux=*-linux-*.zip。解压后打开「① 先看我-<平台>.txt」照做即可；首次自动装环境、只问一次可选组件，模型首次使用自动下载（免 VPN 源）。"
+            --title "ArchRenderAgent $TAG" \
+            --notes "Download the package for your OS: Windows = *-windows-*.zip / macOS = *-mac-*.zip / Linux = *-linux-*.zip. Unzip and open the included \"① 先看我 (read me)\" file. First launch auto-installs the environment, asks once about optional components, and downloads models on first use (from mirrors that work without a VPN)."
