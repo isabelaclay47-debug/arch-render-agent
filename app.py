@@ -422,14 +422,28 @@ def _local_get(url: str, timeout: int = 2):
 def _find_chrome() -> str:
     candidates = [os.path.expandvars(p) for p in CHROME_PATHS]
     if os.name != "nt":
-        wsl_home = _wsl_windows_home()
+        import shutil
+        # 原生 macOS / Linux 的 Chrome/Chromium 位置——真机跑在 Mac/Linux 时靠这些，
+        # 否则网页上「启动 Chrome 去登录」按钮(/api/launch_chrome)在非 Windows 上永远找不到 Chrome。
         candidates.extend([
-            "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
-            "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
         ])
-        if wsl_home:
-            candidates.append(os.path.join(
-                wsl_home, "AppData/Local/Google/Chrome/Application/chrome.exe"))
+        for exe in ("google-chrome-stable", "google-chrome", "chromium-browser", "chromium", "chrome"):
+            found = shutil.which(exe)
+            if found:
+                candidates.append(found)
+        # 仅当确实在 WSL 里跑(能看到 /mnt/c)，才去 Windows 侧找 Chrome。
+        wsl_home = _wsl_windows_home()
+        if wsl_home or os.path.isdir("/mnt/c/Program Files"):
+            candidates.extend([
+                "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
+                "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+            ])
+            if wsl_home:
+                candidates.append(os.path.join(
+                    wsl_home, "AppData/Local/Google/Chrome/Application/chrome.exe"))
 
     seen = set()
     for path in candidates:
