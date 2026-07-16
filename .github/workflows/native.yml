@@ -1,0 +1,64 @@
+name: Native Build
+
+# 原生可执行（.exe / macOS / Linux）实验性构建。
+# 触发方式（都不会影响正式的「源码 zip」发布 release.yml）：
+#   · 推 native-v* 标签（如 native-v1.2.0）
+#   · 在 Actions 页手动 Run workflow（workflow_dispatch）
+# 首版把三平台产物作为 **Actions Artifacts** 上传（不建 Release），下载下来实测通过后，
+# 再决定是否并入正式发布。PyInstaller + Playwright 打包常需按 CI 日志迭代一两轮，属正常。
+on:
+  push:
+    tags:
+      - "native-v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: ArchRenderAgent-windows
+          - os: macos-latest
+            asset: ArchRenderAgent-mac
+          - os: ubuntu-latest
+            asset: ArchRenderAgent-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖 + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-core.txt
+          pip install pyinstaller
+          # 只装 Playwright 驱动，不下载 chromium 浏览器（本 app 用 CDP 接管用户自己的 Chrome）。
+          python -m playwright install-deps || true
+
+      - name: PyInstaller 打包
+        run: pyinstaller ArchRenderAgent.spec --noconfirm
+
+      - name: 打成 zip（保留可执行位）
+        shell: bash
+        run: |
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "${{ matrix.asset }}.zip" ArchRenderAgent >/dev/null
+          else
+            zip -ry "${{ matrix.asset }}.zip" ArchRenderAgent >/dev/null
+          fi
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}.zip
+          if-no-files-found: error

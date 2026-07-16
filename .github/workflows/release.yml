@@ -1,0 +1,46 @@
+name: Release
+
+# 打 tag（如 v1.2.0）推上来即触发：在 GitHub 服务器上打包并发布 Release。
+# 好处：打包/发布都跑在 GitHub 自己的机器上，不依赖本地网络（本地到 api.github.com
+# 时常超时），且天然按平台产出各自的下载包。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}   # 也可在 Actions 页手动触发
+
+permissions:
+  contents: write          # 允许创建 Release / 上传附件
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # make_release 用 git ls-files，需要完整仓库
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 生成各平台下载包（Windows / macOS / Linux）
+        run: python scripts/make_release.py
+
+      - name: 列出产物
+        run: ls -la dist/
+
+      - name: 发布 Release 并附上各平台包
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="$(cat VERSION | sed 's/^/v/')"
+          fi
+          # 存在同名（含草稿）就先删掉，保证是干净的正式发布
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" dist/*.zip \
+            --target "${GITHUB_SHA}" \
+            --title "建筑渲染智能体 $TAG" \
+            --notes "各平台单独下载：Windows=*-windows-*.zip / macOS=*-mac-*.zip / Linux=*-linux-*.zip。解压后打开「① 先看我-<平台>.txt」照做即可；首次自动装环境、只问一次可选组件，模型首次使用自动下载（免 VPN 源）。"
