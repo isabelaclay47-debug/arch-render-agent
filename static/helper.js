@@ -29,45 +29,51 @@ function setEngine(e){
 // VPN 安全版：ChatGPT 模式静默探测 chatgpt.com 是否可达。能连→不打扰；连不上→提示条。
 // local（离线识图）模式不需要网络，直接隐藏。
 let netMsgDefault="";
+function setNetMsg(s){ const a=$("netBannerText"), b=$("netModalText"); if(a)a.textContent=s; if(b)b.textContent=s; }
+function showNetUI(show){ const banner=$("netBanner"), modal=$("netModal");
+  if(banner) banner.style.display=show?"block":"none";
+  if(modal) modal.style.display=show?"flex":"none"; }
+function dismissNetModal(){ const modal=$("netModal"); if(modal) modal.style.display="none"; }
 async function checkNet(userClicked){
   const banner=$("netBanner"), txt=$("netBannerText"); if(!banner) return;
   if(txt && !netMsgDefault) netMsgDefault=txt.textContent;
-  if(engine!=="chat"){ banner.style.display="none"; return; }   // 本地识图不需网络
-  if(userClicked && txt) txt.textContent="检测网络中…（约几秒）";
+  if(engine!=="chat"){ showNetUI(false); return; }   // 本地识图不需网络，横条+弹窗都收起
+  if(userClicked) setNetMsg("检测网络中…（约几秒）");
   try{
     const j=await (await fetch("/api/net_check?target=chatgpt")).json();
     if(j.reachable){
-      if(userClicked && txt) txt.textContent="✓ 已连通，可以开始使用了。";
-      setTimeout(()=>{ banner.style.display="none"; if(txt) txt.textContent=netMsgDefault; },1200);
+      if(userClicked) setNetMsg("✓ 已连通，可以开始使用了。");
+      setTimeout(()=>{ showNetUI(false); setNetMsg(netMsgDefault); },1200);
     }else{
-      banner.style.display="block"; refreshSaturnBtn();
-      if(userClicked && txt) txt.textContent="仍然连不上 chatgpt.com——请确认已配置并连上可访问它的网络后再试。";
+      showNetUI(true); refreshSaturnBtn();   // 连不上→弹窗+横条一起冒头
+      if(userClicked) setNetMsg("仍然连不上 chatgpt.com——请确认已配置并连上可访问它的网络后再试。");
     }
-  }catch(e){ banner.style.display="block"; refreshSaturnBtn(); if(userClicked && txt) txt.textContent="检测失败："+(e.message||e); }
+  }catch(e){ showNetUI(true); refreshSaturnBtn(); if(userClicked) setNetMsg("检测失败："+(e.message||e)); }
 }
 async function refreshSaturnBtn(){
-  const btn=$("saturnBtn"); if(!btn) return;
-  try{ const j=await (await fetch("/api/saturn_status")).json(); btn.style.display=j.configured?"inline-block":"none"; }
-  catch(e){ btn.style.display="none"; }
+  const btn=$("saturnBtn"), btn2=$("saturnBtnModal");
+  let disp="none";
+  try{ const j=await (await fetch("/api/saturn_status")).json(); disp=j.configured?"inline-block":"none"; }catch(e){ disp="none"; }
+  if(btn) btn.style.display=disp; if(btn2) btn2.style.display=disp;
 }
 async function installSaturn(){
-  const txt=$("netBannerText"), btn=$("saturnBtn");
+  const btn=$("saturnBtn"), btn2=$("saturnBtnModal");
   let s;
-  try{ s=await (await fetch("/api/saturn_status")).json(); }catch(e){ if(txt) txt.textContent="打开失败："+(e.message||e); return; }
+  try{ s=await (await fetch("/api/saturn_status")).json(); }catch(e){ setNetMsg("打开失败："+(e.message||e)); return; }
   if(!s.installer_configured && s.dashboard_url){
     window.open(s.dashboard_url,"_blank");
-    if(txt) txt.textContent="已打开土星通讯页面：请在其中登录、按你的系统下载并安装客户端，连上网络后回来点「测试连接」。";
+    setNetMsg("已打开土星通讯页面：请在其中登录、按你的系统下载并安装客户端，连上网络后回来点「测试连接」。");
     return;
   }
   try{
     const j=await (await fetch("/api/saturn_install",{method:"POST"})).json();
-    if(!j.ok){ if(txt) txt.textContent=j.msg||"安装失败"; return; }
-  }catch(e){ if(txt) txt.textContent="启动安装失败："+(e.message||e); return; }
-  if(btn) btn.disabled=true;
+    if(!j.ok){ setNetMsg(j.msg||"安装失败"); return; }
+  }catch(e){ setNetMsg("启动安装失败："+(e.message||e)); return; }
+  if(btn) btn.disabled=true; if(btn2) btn2.disabled=true;
   const poll=setInterval(async()=>{
     try{ const s=await (await fetch("/api/saturn_status")).json(); const st=s.setup||{};
-      if(st.msg && txt) txt.textContent=st.msg;
-      if(st.done){ clearInterval(poll); if(btn) btn.disabled=false; }
+      if(st.msg) setNetMsg(st.msg);
+      if(st.done){ clearInterval(poll); if(btn) btn.disabled=false; if(btn2) btn2.disabled=false; }
     }catch(e){}
   },1500);
 }

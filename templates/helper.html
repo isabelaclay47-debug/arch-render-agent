@@ -29,6 +29,18 @@
   <button class="go" id="saturnBtn" style="display:none;margin-left:8px;padding:4px 12px;width:auto" onclick="installSaturn()">配置土星通讯</button>
   <button class="go" style="margin-left:8px;padding:4px 12px;display:inline-block;width:auto" onclick="checkNet(true)">测试连接</button>
 </div>
+<!-- 连不上外网时弹出的醒目引导（只在 chat 模式探到够不到时冒头，可「稍后」关闭，不强推） -->
+<div id="netModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.62);align-items:center;justify-content:center">
+  <div style="max-width:460px;width:88%;background:#1c1a17;border:1px solid #7a5a2a;border-radius:14px;padding:26px 26px 22px;box-shadow:0 18px 50px rgba(0,0,0,.55);text-align:center">
+    <div style="font-size:17px;font-weight:600;color:#f3e6c8;margin-bottom:12px">还连不上外网</div>
+    <div id="netModalText" style="font-size:13.5px;line-height:1.7;color:#cbb98f;margin-bottom:20px">本工具需要能访问 ChatGPT / Google 的网络。可用「土星通讯」配置，或用你自己的网络；配好后点「测试连接」。</div>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="go" id="saturnBtnModal" style="display:none;width:auto" onclick="installSaturn()">配置土星通讯</button>
+      <button class="go" style="width:auto" onclick="checkNet(true)">测试连接</button>
+      <button class="go" style="width:auto;background:transparent;border:1px solid #6b5a3a;color:#cbb98f" onclick="dismissNetModal()">稍后</button>
+    </div>
+  </div>
+</div>
 <h1>提示词助手 <span class="muted">— 拖图进来，帮你写出专业提示词</span></h1>
 
 <div class="card">
