@@ -2,6 +2,9 @@
 
 All notable changes to **ArchRenderAgent**. The app UI stays bilingual (中 / EN); this file and the GitHub‑facing docs are English.
 
+## [1.2.3] — 2026-07-16
+- **Fix (macOS / Linux):** the in‑app "Launch Chrome to sign in" button (`/api/launch_chrome`) could not find Chrome on native macOS/Linux — it only knew Windows and WSL paths — so the button silently did nothing. It now detects `/Applications/Google Chrome.app` and `google-chrome` / `chromium` on `PATH`. Windows behavior is unchanged.
+
 ## [1.2.2] — 2026-07-16
 - **Consistency:** the Prompt Assistant page now shows the same dismissible "can't reach the internet" modal as the main page. Offline local‑vision mode needs no network and stays quiet.
 
