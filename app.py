@@ -1351,15 +1351,24 @@ def _system_https_proxy():
 
 
 def _reachable_via_proxy(proxy, host, port, timeout):
-    """穿过 HTTP 代理发 CONNECT host:443，代理回 2xx＝这条真实路径（=浏览器走法）能到该站。"""
+    """穿过 HTTP 代理探目标是否**真**可达（=浏览器走法）：先 CONNECT 开隧道，再对目标做 TLS 握手。
+    只看 CONNECT 200 不够——很多代理对任何主机(含不存在的)都先回 200 再去连上游，会假阳性；
+    必须用 TLS 握手证实上游真的通。TLS 握手属传输层、不带凭据、不发任何应用层请求（合规红线）。"""
+    import ssl
     try:
         with socket.create_connection(proxy, timeout=timeout) as s:
             s.settimeout(timeout)
-            req = (f"CONNECT {host}:{port} HTTP/1.1\r\n"
-                   f"Host: {host}:{port}\r\n\r\n").encode()
-            s.sendall(req)
+            s.sendall((f"CONNECT {host}:{port} HTTP/1.1\r\n"
+                       f"Host: {host}:{port}\r\n\r\n").encode())
             resp = s.recv(256)
-        return b" 200 " in resp or resp.startswith(b"HTTP/1.1 200") or resp.startswith(b"HTTP/1.0 200")
+            if b" 200" not in resp.split(b"\r\n", 1)[0]:   # 只看状态行，别在整包里瞎匹配 200
+                return False
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE    # 只问"能否与该站建立加密通道"，不校验证书链(探测非通信)
+            with ctx.wrap_socket(s, server_hostname=host):
+                pass                            # 握手成功即证上游真可达
+        return True
     except Exception:
         return False
 
