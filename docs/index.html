@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ArchRenderAgent — massing screenshot → photorealistic render, on your own ChatGPT</title>
+<meta name="description" content="Turn a rough massing screenshot into a photorealistic architectural render — automatically, faithfully, and on your own ChatGPT or Gemini quota. A local, bring-your-own-account tool.">
+<meta property="og:title" content="ArchRenderAgent">
+<meta property="og:description" content="Massing screenshot → photorealistic architectural render, on your own ChatGPT / Gemini. Faithful, quota-saving, tamper-checked.">
+<meta property="og:type" content="website">
+<style>
+  :root{
+    --bg:#0d0c0b; --panel:#161412; --line:#2a2622; --ink:#efe6d4; --muted:#a89c86;
+    --gold:#d9a94e; --gold-soft:#e7c67f;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;-webkit-font-smoothing:antialiased}
+  a{color:var(--gold-soft);text-decoration:none}
+  a:hover{color:var(--gold)}
+  .wrap{max-width:980px;margin:0 auto;padding:0 22px}
+  .btn{display:inline-block;padding:13px 26px;border-radius:10px;font-weight:600;font-size:15px;
+    transition:transform .12s ease, box-shadow .12s ease}
+  .btn-gold{background:linear-gradient(180deg,var(--gold-soft),var(--gold));color:#241a06;
+    box-shadow:0 8px 24px rgba(217,169,78,.22)}
+  .btn-gold:hover{transform:translateY(-1px);color:#241a06}
+  .btn-ghost{border:1px solid var(--line);color:var(--ink)}
+  .btn-ghost:hover{border-color:var(--gold);color:var(--gold)}
+
+  header{border-bottom:1px solid var(--line);background:rgba(13,12,11,.85);position:sticky;top:0;z-index:10;backdrop-filter:blur(6px)}
+  .nav{display:flex;align-items:center;justify-content:space-between;height:60px}
+  .wordmark{font-weight:700;letter-spacing:.28em;font-size:15px}
+  .wordmark .dot{color:var(--gold)}
+  .nav a.navlink{margin-left:22px;font-size:14px;color:var(--muted)}
+  .nav a.navlink:hover{color:var(--ink)}
+
+  .hero{text-align:center;padding:90px 0 70px}
+  .hero .kicker{color:var(--gold);letter-spacing:.34em;font-size:12px;font-weight:600;text-transform:uppercase}
+  .hero h1{font-size:clamp(30px,5vw,52px);line-height:1.12;margin:18px auto 10px;max-width:16ch;letter-spacing:-.01em}
+  .hero p.sub{color:var(--muted);font-size:clamp(16px,2.4vw,19px);max-width:60ch;margin:0 auto 30px}
+  .cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+  .note{color:var(--muted);font-size:13px;margin-top:18px}
+
+  .strip{display:flex;flex-wrap:wrap;gap:10px 26px;justify-content:center;color:var(--muted);
+    font-size:13.5px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:16px 0}
+  .strip b{color:var(--gold-soft);font-weight:600}
+
+  section{padding:64px 0}
+  h2{font-size:clamp(22px,3.4vw,30px);letter-spacing:-.01em;margin:0 0 8px;text-align:center}
+  .lead{color:var(--muted);text-align:center;max-width:60ch;margin:0 auto 40px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px}
+  .card .ic{font-size:22px}
+  .card h3{margin:12px 0 6px;font-size:16px}
+  .card p{margin:0;color:var(--muted);font-size:14px}
+
+  .dl{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:34px;text-align:center}
+  .dl .os{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:22px 0 6px}
+  .os .pill{border:1px solid var(--line);border-radius:10px;padding:12px 18px;min-width:150px}
+  .os .pill b{display:block;font-size:15px}
+  .os .pill span{color:var(--muted);font-size:12.5px}
+
+  .steps{counter-reset:s;max-width:640px;margin:0 auto;padding:0;list-style:none}
+  .steps li{position:relative;padding:12px 0 12px 46px;border-bottom:1px solid var(--line);color:var(--muted);font-size:15px}
+  .steps li:last-child{border-bottom:0}
+  .steps li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:11px;
+    width:28px;height:28px;border-radius:50%;background:rgba(217,169,78,.14);color:var(--gold);
+    border:1px solid rgba(217,169,78,.4);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
+  .steps li b{color:var(--ink)}
+
+  footer{border-top:1px solid var(--line);padding:34px 0;color:var(--muted);font-size:13px;text-align:center}
+  footer a{margin:0 8px}
+</style>
+</head>
+<body>
+
+<header><div class="wrap nav">
+  <div class="wordmark">ARCH<span class="dot"> · </span>RENDER</div>
+  <nav>
+    <a class="navlink" href="#features">Features</a>
+    <a class="navlink" href="#how">How it works</a>
+    <a class="navlink" href="#download">Download</a>
+    <a class="navlink" href="https://github.com/isabelaclay47-debug/arch-render-agent">GitHub</a>
+  </nav>
+</div></header>
+
+<main class="wrap">
+
+  <section class="hero">
+    <div class="kicker">Architectural rendering agent</div>
+    <h1>Massing screenshot → photorealistic render.</h1>
+    <p class="sub">Turn a rough massing screenshot into a photorealistic architectural render — automatically, faithfully, and on <b>your own ChatGPT or Gemini</b> quota. No API key, nothing uploaded to a third party.</p>
+    <div class="cta">
+      <a class="btn btn-gold" href="https://github.com/isabelaclay47-debug/arch-render-agent/releases/latest">⬇ Download (Win / Mac / Linux)</a>
+      <a class="btn btn-ghost" href="https://github.com/isabelaclay47-debug/arch-render-agent">View on GitHub</a>
+    </div>
+    <p class="note">Free &amp; open source (MIT) · runs locally on your machine · bring your own ChatGPT login</p>
+  </section>
+
+  <div class="strip">
+    <span><b>Faithful</b> — your geometry is locked</span>
+    <span><b>Quota-saving</b> — incremental edits, not re-rolls</span>
+    <span><b>Tamper-checked</b> every round</span>
+    <span><b>2K / 4K / 8K</b> local upscale</span>
+  </div>
+
+  <section id="features">
+    <h2>Why it's different</h2>
+    <p class="lead">A director that understands the brief, writes a professional prompt, generates, checks the result against your base image, and refines — while you stay in control.</p>
+    <div class="grid">
+      <div class="card"><div class="ic">🎯</div><h3>Faithful by design</h3><p>Every round is compared to your original. Building form, floor count, windows, straight lines and text are locked — the model improves materials, light and entourage, not your geometry.</p></div>
+      <div class="card"><div class="ic">💸</div><h3>Quota-saving iteration</h3><p>Local flaws are fixed by an incremental edit on the previous render instead of re-rolling a whole image. Defects converge instead of reappearing.</p></div>
+      <div class="card"><div class="ic">🧭</div><h3>Confirm gate</h3><p>The AI first explains what it understood and shows an editable prompt. Approve or adjust — then it starts spending credits.</p></div>
+      <div class="card"><div class="ic">🖌️</div><h3>Hands-on region edits</h3><p>Mark exactly what to change with freehand, line, rectangle, lasso, smear or eraser — the AI edits only inside the mark.</p></div>
+      <div class="card"><div class="ic">🎨</div><h3>Two engines, your account</h3><p>Generate with ChatGPT or Gemini's nano-banana — both drive a browser you're logged into, on your own subscription. No API key.</p></div>
+      <div class="card"><div class="ic">🧱</div><h3>Curated ArchViz library</h3><p>Precise material vocabulary (board-formed concrete, Shou Sugi Ban, Corten, zinc standing seam…), lighting scenarios and camera guidance.</p></div>
+      <div class="card"><div class="ic">🔍</div><h3>Offline vision, no account</h3><p>The Prompt Assistant can read your image with a local Ollama vision model — fully offline, no account, no VPN.</p></div>
+      <div class="card"><div class="ic">🖼️</div><h3>Local quality boost</h3><p>Final deliverables upscale to 2K/4K/8K with a local super-resolution model and de-watermark locally — offline, on the final image only.</p></div>
+      <div class="card"><div class="ic">🌐</div><h3>Bilingual UI (中 / EN)</h3><p>Work in Chinese; the prompt sent to the model is always English (image models are more reliable in English). Your choice is remembered.</p></div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="lead">One director chat runs the whole loop; you review at every checkpoint.</p>
+    <ol class="steps">
+      <li><b>Describe &amp; upload.</b> A few sentences plus a base image (kept faithful) and optional reference images for mood, material and light.</li>
+      <li><b>Confirm the prompt.</b> The AI paraphrases your intent and shows an editable, professional prompt before any credits are spent.</li>
+      <li><b>Auto-iterate.</b> Generate → tamper/quality check against the base → refine the previous render, or redraw from base if the form drifts.</li>
+      <li><b>Review &amp; export.</b> Pause every N images to leave feedback, mark a region to fix, or export to your Desktop. Every step is saved.</li>
+    </ol>
+  </section>
+
+  <section id="download">
+    <div class="dl">
+      <h2>Download &amp; run — no coding</h2>
+      <p class="lead" style="margin-bottom:6px">Grab the package for your OS from the Releases page, unzip, and open the included read-me. First launch sets everything up and asks you to log into ChatGPT once.</p>
+      <div class="os">
+        <div class="pill"><b>Windows</b><span>*-windows-*.zip · double-click the launcher</span></div>
+        <div class="pill"><b>macOS</b><span>*-mac-*.zip · double-click the launcher</span></div>
+        <div class="pill"><b>Linux</b><span>*-linux-*.zip · see the read-me</span></div>
+      </div>
+      <p style="margin:22px 0 0"><a class="btn btn-gold" href="https://github.com/isabelaclay47-debug/arch-render-agent/releases/latest">⬇ Get the latest release</a></p>
+      <p class="note">Prerequisites: Python 3.10+, Google Chrome, and a ChatGPT account that can generate images.</p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="wordmark" style="font-size:13px;margin-bottom:8px">ARCH<span class="dot"> · </span>RENDER</div>
+    A local, bring-your-own-ChatGPT tool — nothing is uploaded to a third-party server, no account is shared.<br>
+    <a href="https://github.com/isabelaclay47-debug/arch-render-agent">GitHub</a> ·
+    <a href="https://github.com/isabelaclay47-debug/arch-render-agent/releases/latest">Releases</a> ·
+    <a href="https://github.com/isabelaclay47-debug/arch-render-agent/blob/main/CHANGELOG.md">Changelog</a> ·
+    <a href="https://github.com/isabelaclay47-debug/arch-render-agent/blob/main/LICENSE">MIT License</a>
+  </div>
+</footer>
+
+</body>
+</html>
