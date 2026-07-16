@@ -336,6 +336,19 @@
   <button class="btn-blue" onclick="checkNet(true)" style="margin-left:12px">测试连接</button>
 </div>
 
+<!-- 连不上外网时弹出的醒目引导（只在探测够不到时冒头，可「稍后」关闭，不强推） -->
+<div id="netModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.62);align-items:center;justify-content:center">
+  <div style="max-width:460px;width:88%;background:#1c1a17;border:1px solid #7a5a2a;border-radius:14px;padding:26px 26px 22px;box-shadow:0 18px 50px rgba(0,0,0,.55);text-align:center">
+    <div style="font-size:17px;font-weight:600;color:#f3e6c8;margin-bottom:12px">还连不上外网</div>
+    <div id="netModalText" style="font-size:13.5px;line-height:1.7;color:#cbb98f;margin-bottom:20px">本工具需要能访问 ChatGPT / Google 的网络。可用「土星通讯」配置，或用你自己的网络；配好后点「测试连接」。</div>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button class="btn-blue" id="saturnBtnModal" style="display:none" onclick="installSaturn()">配置土星通讯</button>
+      <button class="btn-blue" onclick="checkNet(true)">测试连接</button>
+      <button class="btn-blue" style="background:transparent;border:1px solid #6b5a3a;color:#cbb98f" onclick="dismissNetModal()">稍后</button>
+    </div>
+  </div>
+</div>
+
 <div class="top"><div class="inner">
   <div>
     <h1>ARCH<em> · </em>RENDER<span class="cn">建筑渲染智能体</span>
@@ -1474,58 +1487,76 @@ async function checkConn() {
   checking = false;
 }
 let netMsgDefault = "";
+function setNetMsg(s) {
+  // 反馈同时写进横条和弹窗两处文本，避免加了弹窗后反馈只更新一处、另一处发呆。
+  const a = $("netBannerText"), b = $("netModalText");
+  if (a) a.textContent = s;
+  if (b) b.textContent = s;
+}
+function showNetUI(show) {
+  // 连不上：横条(常驻兜底)+弹窗(醒目引导)一起显示；连上：都收起。
+  const banner = $("netBanner"), modal = $("netModal");
+  if (banner) banner.style.display = show ? "block" : "none";
+  if (modal) modal.style.display = show ? "flex" : "none";
+}
+function dismissNetModal() {
+  // 用户点「稍后」：只收起醒目弹窗，横条留作常驻入口（不困住用户＝不强推）。
+  const modal = $("netModal");
+  if (modal) modal.style.display = "none";
+}
 async function checkNet(userClicked) {
-  // VPN 安全版：静默探测当前引擎所需外网是否可达。能连→完全不打扰；连不上→显示提示条。
+  // VPN 安全版：静默探测当前引擎所需外网是否可达。能连→完全不打扰；连不上→弹窗+横条提示。
   // userClicked=用户点「测试连接」：必须给可见反馈（检测中/已连通/仍连不上），否则看着像死按钮。
   const banner = $("netBanner"), txt = $("netBannerText");
   if (!banner) return;
   if (txt && !netMsgDefault) netMsgDefault = txt.textContent;
-  if (userClicked && txt) txt.textContent = "检测网络中…（约几秒）";
+  if (userClicked) setNetMsg("检测网络中…（约几秒）");
   try {
     const j = await apiJson("/api/net_check");
     if (j.reachable) {
-      if (userClicked && txt) txt.textContent = "✓ 已连通，可以开始使用了。";
-      setTimeout(() => { banner.style.display = "none"; if (txt) txt.textContent = netMsgDefault; }, 1200);
+      if (userClicked) setNetMsg("✓ 已连通，可以开始使用了。");
+      setTimeout(() => { showNetUI(false); setNetMsg(netMsgDefault); }, 1200);
     } else {
-      banner.style.display = "block";
-      refreshSaturnBtn();   // 连不上→按当前系统决定是否显示「一键安装土星通讯」
-      if (userClicked && txt) txt.textContent = "仍然连不上（" + (j.unreachable || []).join(", ") + "）——请确认已配置并连上可访问它们的网络后再试。";
+      showNetUI(true);      // 连不上→弹窗+横条一起冒头
+      refreshSaturnBtn();   // 按当前系统决定是否显示「配置土星通讯」
+      if (userClicked) setNetMsg("仍然连不上（" + (j.unreachable || []).join(", ") + "）——请确认已配置并连上可访问它们的网络后再试。");
     }
   } catch (e) {
-    banner.style.display = "block";
+    showNetUI(true);
     refreshSaturnBtn();
-    if (userClicked && txt) txt.textContent = "检测失败：" + (e.message || e);
+    if (userClicked) setNetMsg("检测失败：" + (e.message || e));
   }
 }
 async function refreshSaturnBtn() {
-  // 只有当前系统配了土星通讯安装包时才显示「一键安装」按钮（后端判定系统）。
-  const btn = $("saturnBtn"); if (!btn) return;
-  try {
-    const j = await apiJson("/api/saturn_status");
-    btn.style.display = j.configured ? "inline-block" : "none";
-  } catch (e) { btn.style.display = "none"; }
+  // 只有配了土星通讯（面板页或安装包）时才显示「配置土星通讯」按钮——横条和弹窗两处同步。
+  const btn = $("saturnBtn"), btn2 = $("saturnBtnModal");
+  let disp = "none";
+  try { const j = await apiJson("/api/saturn_status"); disp = j.configured ? "inline-block" : "none"; }
+  catch (e) { disp = "none"; }
+  if (btn) btn.style.display = disp;
+  if (btn2) btn2.style.display = disp;
 }
 async function installSaturn() {
   // 用户自愿点。有直链安装包→后端下载+打开安装程序并轮询进度；只有面板页→打开面板让用户自助下载。
-  const txt = $("netBannerText"), btn = $("saturnBtn");
+  const btn = $("saturnBtn"), btn2 = $("saturnBtnModal");
   let s;
-  try { s = await apiJson("/api/saturn_status"); } catch (e) { if (txt) txt.textContent = "打开失败：" + (e.message || e); return; }
+  try { s = await apiJson("/api/saturn_status"); } catch (e) { setNetMsg("打开失败：" + (e.message || e)); return; }
   if (!s.installer_configured && s.dashboard_url) {
     window.open(s.dashboard_url, "_blank");
-    if (txt) txt.textContent = "已打开土星通讯页面：请在其中登录、按你的系统下载并安装客户端，连上网络后回来点「测试连接」。";
+    setNetMsg("已打开土星通讯页面：请在其中登录、按你的系统下载并安装客户端，连上网络后回来点「测试连接」。");
     return;
   }
   try {
     const j = await apiJson("/api/saturn_install", { method: "POST" });
-    if (!j.ok) { if (txt) txt.textContent = j.msg || "安装失败"; return; }
-  } catch (e) { if (txt) txt.textContent = "启动安装失败：" + (e.message || e); return; }
-  if (btn) btn.disabled = true;
+    if (!j.ok) { setNetMsg(j.msg || "安装失败"); return; }
+  } catch (e) { setNetMsg("启动安装失败：" + (e.message || e)); return; }
+  if (btn) btn.disabled = true; if (btn2) btn2.disabled = true;
   const poll = setInterval(async () => {
     try {
       const s = await apiJson("/api/saturn_status");
       const st = s.setup || {};
-      if (st.msg && txt) txt.textContent = st.msg;
-      if (st.done) { clearInterval(poll); if (btn) btn.disabled = false; }
+      if (st.msg) setNetMsg(st.msg);
+      if (st.done) { clearInterval(poll); if (btn) btn.disabled = false; if (btn2) btn2.disabled = false; }
     } catch (e) {}
   }, 1500);
 }
