@@ -1321,9 +1321,56 @@ def _net_hosts_for_engine():
     return ["chatgpt.com"]
 
 
+def _system_https_proxy():
+    """当前生效的 HTTP(S) 系统代理 (host, port)，没有则 None。
+    进程已带 HTTPS_PROXY 就用它；否则读系统代理（Windows 走注册表，与 _proxy_env 同源）。
+    土星通讯等「系统代理/规则模式」就是往这里塞 127.0.0.1:端口——探测必须认它。"""
+    url = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if not url:
+        try:
+            import urllib.request
+            proxies = urllib.request.getproxies()
+        except Exception:
+            proxies = {}
+        url = proxies.get("https") or proxies.get("http")
+    if not url:
+        return None
+    # 只认 http(s) 代理的 CONNECT 隧道；socks 代理裸探测测不了，交回直连兜底。
+    if "://" in url and not url.lower().startswith("http"):
+        return None
+    hostport = url.split("://", 1)[-1].rstrip("/")
+    if "@" in hostport:                       # 去掉 user:pass@
+        hostport = hostport.rsplit("@", 1)[-1]
+    host, _, port = hostport.partition(":")
+    if not host:
+        return None
+    try:
+        return host, int(port) if port else 80
+    except ValueError:
+        return None
+
+
+def _reachable_via_proxy(proxy, host, port, timeout):
+    """穿过 HTTP 代理发 CONNECT host:443，代理回 2xx＝这条真实路径（=浏览器走法）能到该站。"""
+    try:
+        with socket.create_connection(proxy, timeout=timeout) as s:
+            s.settimeout(timeout)
+            req = (f"CONNECT {host}:{port} HTTP/1.1\r\n"
+                   f"Host: {host}:{port}\r\n\r\n").encode()
+            s.sendall(req)
+            resp = s.recv(256)
+        return b" 200 " in resp or resp.startswith(b"HTTP/1.1 200") or resp.startswith(b"HTTP/1.0 200")
+    except Exception:
+        return False
+
+
 def _host_reachable(host, port=443, timeout=4.0):
-    """纯 TCP 连通性探测：能在 timeout 内握手到 host:443 即视为可达。
-    只回答「网络能不能到达该站」——不发任何应用层请求、不带凭据、不改系统网络（合规红线）。"""
+    """连通性探测：先看真实出网路径能不能到 host:443，视为可达。
+    有系统代理（土星通讯等规则模式）→ 穿代理 CONNECT 测，和 Chrome 生图同源；
+    无代理（全局 TUN VPN / 裸网）→ 直连测。都只问「能不能到达」，不带凭据、不改系统网络（合规红线）。"""
+    proxy = _system_https_proxy()
+    if proxy:
+        return _reachable_via_proxy(proxy, host, port, timeout)
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
