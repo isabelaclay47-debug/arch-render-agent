@@ -644,33 +644,57 @@ class ChatGPTClient:
             return False
 
     def download_last_image(self, page, save_path: str) -> bool:
-        """把最后一条回复里的生成图存到本地。fetch 失败时用 canvas 兜底。"""
-        handle = self._last_image_handle(page)
-        if handle is None:
+        """把最后一条回复里的生成图存到本地。
+        关键：生成图来自跨域 CDN 且 <img> 未带 crossOrigin，在页面 JS 里 fetch 会被
+        CORS 拒、canvas.toDataURL 会因画布被污染而抛 'Tainted canvases may not be
+        exported'。正确做法：用 Playwright 自己的 request 上下文取字节——走浏览器进程、
+        共享登录 cookie、不受 CORS/画布污染限制。仅 blob:/data: 才回退页内 fetch/解码。
+        任何异常都吞成 False（本轮按未抓到图处理），绝不把可恢复的抓图失败升级成致命错误。"""
+        try:
+            handle = self._last_image_handle(page)
+            if handle is None:
+                return False
+            src = handle.evaluate("el => el.currentSrc || el.src || ''")
+            raw = self._fetch_image_bytes(page, handle, src)
+            if not raw or len(raw) < 10000:  # 太小说明抓到的是图标/占位图
+                return False
+            with open(save_path, "wb") as f:
+                f.write(raw)
+            return True
+        except Exception as e:
+            self.log(f"（下载生成图失败：{e!r}；本轮按未抓到图处理）")
             return False
+
+    def _fetch_image_bytes(self, page, handle, src: str):
+        """按 URL 方案取生成图字节。http(s) 走 Playwright request（绕过 CORS 与画布污染，
+        并带上登录 cookie）；data: 直接解码；blob: 只在页内有效，回退页内 fetch。
+        彻底不再用 canvas.toDataURL——对跨域图它必抛异常，对同源/blob 图页内 fetch 已够用。"""
+        if src.startswith("data:") and "," in src:
+            return base64.b64decode(src.split(",", 1)[1])
+        if src.startswith("http"):
+            try:
+                resp = page.request.get(src)
+                if resp.ok:
+                    body = resp.body()
+                    if body:
+                        return body
+            except Exception:
+                pass  # 极少数：request 也拿不到，退回页内 fetch 再试一次
+        # blob: 或 http 兜底：页内 fetch（仅同源/blob 有效），失败返回空串而非抛错
         data_url = handle.evaluate(
             """async el => {
                 try {
-                    const r = await fetch(el.src);
+                    const r = await fetch(el.currentSrc || el.src);
                     const b = await r.blob();
                     return await new Promise(res => {
                         const fr = new FileReader();
                         fr.onload = () => res(fr.result);
+                        fr.onerror = () => res('');
                         fr.readAsDataURL(b);
                     });
-                } catch (e) {
-                    const c = document.createElement('canvas');
-                    c.width = el.naturalWidth; c.height = el.naturalHeight;
-                    c.getContext('2d').drawImage(el, 0, 0);
-                    return c.toDataURL('image/png');
-                }
+                } catch (e) { return ''; }
             }"""
         )
-        if not data_url or "," not in data_url:
-            return False
-        raw = base64.b64decode(data_url.split(",", 1)[1])
-        if len(raw) < 10000:  # 太小说明抓到的是图标/占位图
-            return False
-        with open(save_path, "wb") as f:
-            f.write(raw)
-        return True
+        if data_url and "," in data_url:
+            return base64.b64decode(data_url.split(",", 1)[1])
+        return None
