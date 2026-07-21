@@ -2,6 +2,13 @@
 
 All notable changes to **ArchRenderAgent**. The app UI stays bilingual (中 / EN); this file and the GitHub‑facing docs are English.
 
+## [1.2.4] — 2026-07-21
+- **Fix (image capture):** generating an image could crash a whole session with `SecurityError: Failed to execute 'toDataURL' on 'HTMLCanvasElement': Tainted canvases may not be exported`. Gemini/ChatGPT generated images are served from a **cross‑origin CDN** (`*.googleusercontent.com`) and painted into an `<img>` without `crossOrigin`, so the in‑page fallback tainted the canvas and `toDataURL()` threw — and the exception escaped `download_last_image`, turning a *recoverable* "couldn't grab the image" into a fatal error. Image bytes are now pulled with Playwright's own `page.request` (browser‑process fetch that shares the login cookies and is subject to neither CORS nor canvas taint); only `blob:` / `data:` URLs keep an in‑page path. Any failure now degrades to a clean retry instead of crashing. Applies to both `gemini_client.py` and `chatgpt_client.py`.
+
+## Lessons learned (do not repeat)
+- **Never read a cross‑origin image's pixels inside the page's JS sandbox.** In‑page `fetch(img.src)` is blocked by CORS and `canvas.drawImage(img)+toDataURL()` throws on a tainted canvas. Use the driver's own request context (`page.request.get`) — it runs in the browser process, carries the session cookies, and bypasses both restrictions. The canvas fallback was pure liability: it *always* threw for cross‑origin images and was redundant for same‑origin/blob ones.
+- **A helper with a `-> bool` failure contract must not let exceptions escape.** `download_last_image` was supposed to return `False` on failure (the caller turns that into a graceful retry). An unhandled in‑page JS throw bypassed that contract and killed the round. Wrap the whole body so failures return `False`.
+
 ## [1.2.3] — 2026-07-16
 - **Fix (macOS / Linux):** the in‑app "Launch Chrome to sign in" button (`/api/launch_chrome`) could not find Chrome on native macOS/Linux — it only knew Windows and WSL paths — so the button silently did nothing. It now detects `/Applications/Google Chrome.app` and `google-chrome` / `chromium` on `PATH`. Windows behavior is unchanged.
 
