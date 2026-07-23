@@ -280,6 +280,27 @@ def _maybe_enhance(path: str):
         log(f"⚠ 画质增强出错，已保留原图：{e}")
 
 
+def _dewatermark_inplace(path: str):
+    """Gemini 引擎：把刚落盘的**过程图**就地去掉 nano-banana 水印(✦)，让 UI 全程看到的
+    都是干净图。之前去水印只在最终交付时做，过程缩略图/圈选底图仍带 ✦，用户以为"去水印
+    没开启"。非 gemini 或缺模型时零开销跳过；失败保留原图，绝不影响出图流程。"""
+    if get_image_engine() != "gemini":
+        return
+    try:
+        import image_enhance
+    except Exception as e:
+        log(f"⚠ 去水印不可用（缺依赖：{e}），已跳过。")
+        return
+    try:
+        r = image_enhance.enhance_file(path, quality="1k", dewatermark_wm=True, log=log)
+        if r.get("dewatermark"):
+            log("已去除本轮生成图的 Gemini 水印。")
+        for s in r.get("skipped", []):
+            log(f"（去水印跳过：{s}）")
+    except Exception as e:
+        log(f"⚠ 去水印出错，已保留原图：{e}")
+
+
 def _png_size(path):
     """快读 PNG 尺寸（W×H 字符串），失败返回空串。只读 24 字节，不解码整图。"""
     try:
@@ -785,6 +806,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             img_path = os.path.join(sess_dir, f"iter_{i:02d}.png")
             if not gen.download_last_image(gen.gen_page, img_path):
                 raise GenStalledError(f"第 {i} 轮似乎出图了但没抓到图片（页面可能假死）。")
+            _dewatermark_inplace(img_path)   # gemini：过程图也去水印，UI 全程干净（含后续精修底图/QC）
             last_gen = img_path
             log(f"第 {i} 轮出图完成，对比原图检查篡改与画质…")
             # 图已成功落盘。QC（导演对话）若因网页异常失败，绝不能把这张图和整个会话一起丢掉——
@@ -880,6 +902,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             img_path = os.path.join(sess_dir, f"iter_{i:02d}.png")
             if not gen.download_last_image(gen.gen_page, img_path):
                 raise GenStalledError(f"局部修改第 {i} 轮似乎出图了但没抓到图片（页面可能假死）。")
+            _dewatermark_inplace(img_path)   # gemini：局改过程图也去水印
             log("局部修改出图完成，检查标记区域外是否被动…")
             qc_reply = client.send(client.director_page,
                                    pe.regional_qc_message(instruction),
