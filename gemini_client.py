@@ -79,17 +79,21 @@ class GeminiClient:
         self._owns_pw = True        # 是否由本 client 负责关闭 playwright；与 ChatGPT 共用时为 False
         self._browser = None
         self._ctx = None
-        self.gen_page = None        # 生成对话页
+        self.gen_page = None        # 生成对话页（生图/局改，每轮换新标签）
+        self.director_page = None   # 导演对话页（理解/提示词/查篡改/翻译）——仅「Gemini 全包」模式启用，
+                                    #  全程一个会话；为 None 时本 client 只当画手（与 ChatGPT 当导演共存）
 
     # ---------- 连接与页面管理 ----------
 
-    def connect(self, pw=None):
+    def connect(self, pw=None, with_director: bool = False):
         """pw：与 ChatGPTClient 共用的已启动 sync_playwright（必须共用——同一线程
-        无法起第二个 sync_playwright，否则抛「Playwright Sync API inside the asyncio loop」）。"""
+        无法起第二个 sync_playwright，否则抛「Playwright Sync API inside the asyncio loop」）。
+        with_director=True（Gemini 全包模式）：额外开一个导演页，让本 client 也负责文字推理，
+        整个任务不再需要 ChatGPT——「选 Gemini 就只启动 Gemini」。"""
         self._owns_pw = pw is None
         self._pw = pw or sync_playwright().start()
         try:
-            self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
+            self._browser = self._connect_browser_with_retry()
         except Exception as e:
             raise GeminiError(
                 f"连不上 Chrome 调试端口({self.cdp_url})。请先运行 start_chrome.bat "
@@ -101,7 +105,12 @@ class GeminiClient:
         self._open_chat(self.gen_page)
         self._check_logged_in(self.gen_page)
         self.select_model(self.gen_page)
-        self.log("已接管 Chrome，Gemini（nano-banana）登录状态正常，用于生图。")
+        if with_director:
+            self.director_page = self._ctx.new_page()   # 导演对话：全程一个会话，别留 about:blank
+            self._open_chat(self.director_page)
+            self.log("已接管 Chrome，Gemini 全包：一个页做导演文字推理、一个页专门生图，全程不启动 ChatGPT。")
+        else:
+            self.log("已接管 Chrome，Gemini（nano-banana）登录状态正常，用于生图。")
 
     def _open_chat(self, page):
         page.goto(GEMINI_URL, wait_until="domcontentloaded", timeout=60000)
@@ -180,6 +189,22 @@ class GeminiClient:
         except Exception:
             return False
 
+    def _connect_browser_with_retry(self, tries: int = 4):
+        """connect_over_cdp 偶发「socket hang up / retrieving websocket url」瞬时故障
+        （Chrome 调试端点在标签崩溃/切换瞬间短暂取不到 websocket）——退避重试几次基本都能连上，
+        绝不一次失败就把会话判死（Image#3：socket hang up→退回刷新死页面→browser closed 大退）。"""
+        last = None
+        for i in range(tries):
+            try:
+                return self._pw.chromium.connect_over_cdp(self.cdp_url)
+            except Exception as e:
+                last = e
+                self.log(f"连接调试端口失败（{str(e)[:60]}），{i + 1}/{tries} 退避重试…")
+                time.sleep(1.5 * (i + 1))
+        raise GeminiError(
+            f"多次连接 Chrome 调试端口({self.cdp_url})都失败（{last}）——"
+            "请确认专用 Chrome 还开着、没被杀掉，再点「刷新 / 重试本轮」。")
+
     def _reconnect(self):
         self.log("检测到浏览器/页面已断开，正在重连专用 Chrome 并重开 Gemini 页面…")
         # 不 stop 再 start playwright：与 ChatGPT 共用同一个 pw，停掉会连累对方，且同一线程
@@ -187,13 +212,16 @@ class GeminiClient:
         if self._pw is None:
             self._pw = sync_playwright().start()
             self._owns_pw = True
-        self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
+        self._browser = self._connect_browser_with_retry()
         if not self._browser.contexts:
             raise GeminiError("重连后浏览器没有可用上下文——请检查专用 Chrome 是否还开着。")
         self._ctx = self._browser.contexts[0]
         self.gen_page = self._ctx.new_page()
         self._open_chat(self.gen_page)
         self.select_model(self.gen_page)
+        if self.director_page is not None:   # 全包模式：导演页也一并重建（会丢导演上下文，硬崩下的无奈代价）
+            self.director_page = self._ctx.new_page()
+            self._open_chat(self.director_page)
         self.log("已重连 Gemini，继续任务。")
 
     def new_generation_chat(self):
@@ -297,20 +325,28 @@ class GeminiClient:
     def _current_gen_page(self):
         return self.gen_page
 
+    def _current_page(self, role: str):
+        """按角色取当前页（重连后引用会变，始终以 self.* 为准）。director 仅全包模式存在。"""
+        if role == "director" and self.director_page is not None:
+            return self.director_page
+        return self.gen_page
+
     # ---------- 发消息 / 生图 ----------
 
     def send(self, page, text: str, image_paths=None, expect_image=False) -> str:
         """发一条消息（带底图/标记图），阻塞等生成完成。返回回复文本（生图时通常为空串）。
         自愈式重试：页面死了整体重连；生图卡死换新对话重发；3 次仍失败抛 GenStalledError。
-        为与 ChatGPTClient.send 同签名，expect_image 保留；本 client 主要用于 expect_image=True。"""
+        role 由传入 page 判定：全包模式下 director_page 走文字推理（失败只刷新、保住上下文），
+        gen_page 走生图（失败换新对话/新窗口）。只当画手时 director_page 为 None，role 恒为 gen。"""
         image_paths = image_paths or []
         timeout = IMAGE_TIMEOUT if expect_image else TEXT_TIMEOUT
         max_attempts = 3
+        role = "director" if (self.director_page is not None and page is self.director_page) else "gen"
         last_err = None
 
         for attempt in range(1, max_attempts + 1):
             self._raise_if_cancelled()       # 尝试之间也响应提前结束(#6b)
-            page = self._current_gen_page()
+            page = self._current_page(role)  # 重连后引用会变，每次都取最新的
             try:
                 before = page.locator(SEL["assistant"]).count()
                 if image_paths:
@@ -327,29 +363,36 @@ class GeminiClient:
             except GeminiError as e:
                 last_err = e
                 if attempt < max_attempts:
-                    self._recover_before_retry(attempt, max_attempts, expect_image)
+                    self._recover_before_retry(role, attempt, max_attempts, expect_image)
             except Exception as e:
                 last_err = GeminiError(f"页面操作异常：{e}")
                 if attempt < max_attempts:
-                    self._recover_before_retry(attempt, max_attempts, expect_image, force_reconnect=True)
+                    self._recover_before_retry(role, attempt, max_attempts, expect_image, force_reconnect=True)
         if expect_image:
             raise GenStalledError(
                 f"Gemini 生图连续 {max_attempts} 次自愈仍未出图（{last_err}）。可能额度用尽或排队——"
                 "任务已暂停但未结束，可点「刷新 / 重试本轮」再试。")
         raise last_err
 
-    def _recover_before_retry(self, attempt, max_attempts, expect_image, force_reconnect=False):
-        self.log(f"生图这一步没成功，自动干预后重试（第 {attempt + 1}/{max_attempts} 次）…")
-        page = self._current_gen_page()
+    def _recover_before_retry(self, role, attempt, max_attempts, expect_image, force_reconnect=False):
+        kind = "文字" if role == "director" else "生图"
+        self.log(f"{kind}这一步没成功，自动干预后重试（第 {attempt + 1}/{max_attempts} 次）…")
+        page = self._current_page(role)
         if force_reconnect or not self._page_alive(page):
             try:
                 self._reconnect()
                 return
             except Exception as e:
-                self.log(f"重连失败（{e}），改为换新对话再试一次。")
+                self.log(f"重连失败（{e}），改为刷新/换新对话再试一次。")
+                page = self._current_page(role)
         try:
-            # 换标签还救不活（attempt>=2）→ 直接另开新窗口（卡死几分钟干预不成功就开新窗户）
-            if attempt >= 2:
+            if role == "director":
+                # 导演文字：只刷新，保住导演对话上下文（绝不新开对话，否则丢理解/提示词的来龙去脉）
+                if page is not None:
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(3000)
+            elif attempt >= 2:
+                # 生图换标签还救不活 → 另开新窗口（卡死几分钟干预不成功就开新窗户）
                 self.new_generation_window()
             else:
                 self.new_generation_chat()   # 生图：换个干净的新对话重发，救活假死的标签
@@ -654,16 +697,27 @@ class GeminiClient:
         try:
             handle = self._last_image_handle(page)
             if handle is None:
+                self.log("（未定位到生成图 <img>——落 DOM 快照供修选择器）")
+                self._dump_dom(page, "download: 未定位到生成图 handle")
                 return False
             src = handle.evaluate("el => el.currentSrc || el.src || ''")
             raw = self._fetch_image_bytes(page, handle, src)
-            if not raw or len(raw) < 10000:  # 太小说明抓到的是图标/占位图
+            n = len(raw) if raw else 0
+            if not raw or n < 10000:  # 太小说明抓到的是图标/占位缩略图
+                scheme = (src.split(":", 1)[0] if src else "空")
+                self.log(f"（图已识别但取字节异常：scheme={scheme} bytes={n} src={src[:90]!r}"
+                         "——已落 DOM 快照，发我可精修抓图）")
+                self._dump_dom(page, f"download: 字节过小/为空 bytes={n} src={src[:120]}")
                 return False
             with open(save_path, "wb") as f:
                 f.write(raw)
             return True
         except Exception as e:
-            self.log(f"（下载生成图失败：{e!r}；本轮按未抓到图处理）")
+            self.log(f"（下载生成图失败：{e!r}；已落 DOM 快照，本轮按未抓到图处理）")
+            try:
+                self._dump_dom(page, f"download: 异常 {e!r}")
+            except Exception:
+                pass
             return False
 
     def _fetch_image_bytes(self, page, handle, src: str):
@@ -673,14 +727,18 @@ class GeminiClient:
         if src.startswith("data:") and "," in src:
             return base64.b64decode(src.split(",", 1)[1])
         if src.startswith("http"):
-            try:
-                resp = page.request.get(src)
-                if resp.ok:
-                    body = resp.body()
-                    if body:
-                        return body
-            except Exception:
-                pass  # 极少数：request 也拿不到，退回页内 fetch 再试一次
+            # 带上 referer（部分 googleusercontent 签名图缺 referer 会 403）；签名图偶发
+            # 短暂 404/未就绪，重试一次基本能拿到。都不行再退回页内 fetch。
+            for attempt in range(2):
+                try:
+                    resp = page.request.get(src, headers={"referer": page.url})
+                    if resp.ok:
+                        body = resp.body()
+                        if body:
+                            return body
+                except Exception:
+                    pass
+                time.sleep(0.8)
         # blob: 或 http 兜底：页内 fetch（仅同源/blob 有效），失败返回空串而非抛错
         data_url = handle.evaluate(
             """async el => {

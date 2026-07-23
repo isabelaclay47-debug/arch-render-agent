@@ -209,6 +209,31 @@ def set_gemini_model(m: str) -> str:
     return canon
 
 
+# Gemini 分工开关（仅引擎=gemini 时有意义）：
+#   True（默认）＝Gemini 全包——选 Gemini 就**只启动 Gemini**，它既做文字推理（理解/提示词/
+#     查篡改/翻译）又生图，只需登录 gemini.google.com，全程不碰 ChatGPT。
+#   False＝Gemini 只生图、仍连 ChatGPT 当导演做文字推理（旧行为，两个都启动）。
+def _truthy(v) -> bool:
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("1", "true", "yes", "on", "y")
+
+
+_gemini_selfrun = _truthy(os.environ.get("ARA_GEMINI_SELFRUN", "1"))
+
+
+def get_gemini_selfrun() -> bool:
+    with _lock:
+        return _gemini_selfrun
+
+
+def set_gemini_selfrun(on) -> bool:
+    global _gemini_selfrun
+    with _lock:
+        _gemini_selfrun = _truthy(on)
+        return _gemini_selfrun
+
+
 # 画质档位（需求：本地 AI 超分到 1K/2K/4K/8K；gemini 引擎顺带去水印）。默认 1k=原生不放大。
 _QUALITIES = ("1k", "2k", "4k", "8k")
 _quality = os.environ.get("ARA_QUALITY", "1k").strip().lower()
@@ -590,21 +615,36 @@ def _update_meta(sess_dir: str, **fields):
 def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: str,
                 quality: str, ratio: str, review_every: int = DEFAULT_REVIEW_EVERY,
                 ref_roles: list = None):
-    client = ChatGPTClient(log=log, nudge=_nudge, cancel=_finish_now)
     engine = get_image_engine()
-    gen_client = None          # 生图专用 client；gemini 引擎时才另开，否则复用 ChatGPT
+    gemini_solo = (engine == "gemini" and get_gemini_selfrun())  # 选 Gemini 就只启动 Gemini
+    client = None              # 导演（文字推理）client
+    gen_client = None          # 生图专用 client；仅「借 ChatGPT 当导演」时与 client 分开
     try:
         with _lock:
             S["state"] = "connecting"
         log(f"正在连接 Chrome（调试端口 {CDP_PORT}）…")
-        # gemini 引擎下 ChatGPT 只做文本推理，不必开生图标签
-        client.connect(director_only=(engine == "gemini"))
-        if engine == "gemini":
-            log("生图引擎：Gemini（nano-banana）网页驱动；ChatGPT 只做文本推理（理解/提示词/查篡改）。")
+        if gemini_solo:
+            # 【Gemini 全包】只启动 Gemini：它既当导演（文字推理）又当画手（生图），只登录 gemini.google.com
+            log("生图引擎：Gemini 全包——理解/提示词/查篡改/翻译与生图都由 Gemini 完成，全程不启动 ChatGPT。")
             gen_client = GeminiClient(log=log, nudge=_nudge, cancel=_finish_now,
                                       model=get_gemini_model())
-            gen_client.connect(pw=client._pw)   # 共用 ChatGPT 的 playwright，避免同线程双实例报错
-        gen = gen_client if engine == "gemini" else client   # 「生图这只手」用哪个 client
+            gen_client.connect(with_director=True)   # 自开导演页+生图页，不共用别人的 pw
+            client = gen_client                      # 导演也用它（director_page 走文字，gen_page 走生图）
+            gen = gen_client
+        elif engine == "gemini":
+            # 【借 ChatGPT 当导演】Gemini 只生图，ChatGPT 做文本推理（旧行为，两个都启动）
+            client = ChatGPTClient(log=log, nudge=_nudge, cancel=_finish_now)
+            client.connect(director_only=True)       # ChatGPT 只做文本推理，不开生图标签
+            log("生图引擎：Gemini（nano-banana）生图；ChatGPT 只做文本推理（理解/提示词/查篡改）。")
+            gen_client = GeminiClient(log=log, nudge=_nudge, cancel=_finish_now,
+                                      model=get_gemini_model())
+            gen_client.connect(pw=client._pw)        # 共用 ChatGPT 的 playwright，避免同线程双实例报错
+            gen = gen_client
+        else:
+            # 【纯 ChatGPT】既当导演又当画手
+            client = ChatGPTClient(log=log, nudge=_nudge, cancel=_finish_now)
+            client.connect(director_only=False)
+            gen = client
         with _lock:
             S["state"] = "running"
 
@@ -999,8 +1039,10 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             S["error"] = f"未预期的错误：{e}"
         log(f"未预期的错误：{e}")
     finally:
-        client.close()
-        if gen_client is not None:
+        if client is not None:
+            client.close()
+        # 全包模式下 gen_client 与 client 是同一个对象，别重复关（pw 已停）
+        if gen_client is not None and gen_client is not client:
             gen_client.close()
 
 
@@ -1091,6 +1133,7 @@ def api_status():
         data["quality"] = _quality             # 当前画质档位，供前端下拉回显
         data["gemini_model"] = _gemini_model   # 当前 Gemini 生图模型，引擎=gemini 时前端下拉回显
         data["gemini_models"] = list(_GEMINI_MODELS)  # 可选模型清单，供前端渲染下拉
+        data["gemini_selfrun"] = _gemini_selfrun  # Gemini 全包(只启动Gemini) / 借ChatGPT当导演，供开关回显
         data["build"] = APP_BUILD              # 运行中代码版本标记，供确认「重启是否生效」
     return jsonify(data)
 
@@ -1119,6 +1162,16 @@ def api_set_gemini_model():
     except ValueError as e:
         return jsonify({"ok": False, "msg": str(e)}), 400
     return jsonify({"ok": True, "model": m})
+
+
+@app.route("/api/set_gemini_selfrun", methods=["POST"])
+def api_set_gemini_selfrun():
+    """切换 Gemini 分工：全包（只启动 Gemini）/ 借 ChatGPT 当导演。任务运行中不许切——
+    本轮连接已建立。下次「开始渲染」时生效。"""
+    if S["state"] not in ("idle", "done", "error"):
+        return jsonify({"ok": False, "msg": "任务进行中不能切换分工，请等本次结束或先结束任务"}), 400
+    on = set_gemini_selfrun((request.get_json(silent=True) or {}).get("selfrun"))
+    return jsonify({"ok": True, "selfrun": on})
 
 
 @app.route("/api/set_quality", methods=["POST"])
@@ -1254,13 +1307,13 @@ def api_clarify():
 def _login_targets():
     """按当前生图引擎返回需要检测/登录的站点：(名称, url匹配片段, 打开url, 就绪选择器)。
     · ChatGPT 引擎：只需 ChatGPT。
-    · Gemini 引擎：需 Gemini(出图) ＋ ChatGPT(导演——理解/扩写提示词/查篡改仍走 ChatGPT)。
-      Gemini 放第一个：启动时它是前台标签，用户先登缺的那个。"""
+    · Gemini 全包（默认）：只需 Gemini——文字推理也归它，全程不碰 ChatGPT（选谁只登谁）。
+    · Gemini 借 ChatGPT 当导演：需 Gemini(出图) ＋ ChatGPT(导演)。Gemini 放第一个先登。"""
     import gemini_client as gc
     chatgpt = ("ChatGPT", "chatgpt.com", "https://chatgpt.com/", "#prompt-textarea")
     gemini = ("Gemini", "gemini.google.com", gc.GEMINI_URL, gc.SEL["editor"])
     if get_image_engine() == "gemini":
-        return [gemini, chatgpt]
+        return [gemini] if get_gemini_selfrun() else [gemini, chatgpt]
     return [chatgpt]
 
 

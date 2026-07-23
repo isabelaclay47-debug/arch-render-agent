@@ -72,7 +72,7 @@ class ChatGPTClient:
         self._owns_pw = pw is None
         self._pw = pw or sync_playwright().start()
         try:
-            self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
+            self._browser = self._connect_browser_with_retry()
         except Exception as e:
             raise ChatGPTError(
                 f"连不上 Chrome 调试端口({self.cdp_url})。请先运行 start_chrome.bat "
@@ -105,6 +105,23 @@ class ChatGPTClient:
         except Exception:
             return False
 
+    def _connect_browser_with_retry(self, tries: int = 4):
+        """connect_over_cdp 偶发「socket hang up / retrieving websocket url」——这是 Chrome
+        调试端点在标签崩溃/切换瞬间**短暂**取不到 websocket 的瞬时故障，退避重试几次基本都能连上。
+        绝不能一次失败就把会话判死（Image#3：一次 socket hang up→退回刷新死页面→
+        Locator.count: browser has been closed→整个会话 error 大退）。"""
+        last = None
+        for i in range(tries):
+            try:
+                return self._pw.chromium.connect_over_cdp(self.cdp_url)
+            except Exception as e:
+                last = e
+                self.log(f"连接调试端口失败（{str(e)[:60]}），{i + 1}/{tries} 退避重试…")
+                time.sleep(1.5 * (i + 1))
+        raise ChatGPTError(
+            f"多次连接 Chrome 调试端口({self.cdp_url})都失败（{last}）——"
+            "请确认专用 Chrome 还开着、没被杀掉，再点「刷新 / 重试本轮」。")
+
     def _reconnect(self):
         """整体重连：CDP 断开 / 标签被关（Target page/context/browser closed）时的兜底。
 
@@ -117,7 +134,7 @@ class ChatGPTClient:
         if self._pw is None:
             self._pw = sync_playwright().start()
             self._owns_pw = True
-        self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
+        self._browser = self._connect_browser_with_retry()
         if not self._browser.contexts:
             raise ChatGPTError("重连后浏览器没有可用上下文——请检查专用 Chrome 是否还开着。")
         self._ctx = self._browser.contexts[0]
@@ -444,6 +461,58 @@ class ChatGPTClient:
     AUTO_RELOAD_CAP = 1    # 同一坏死标签最多"就地自动刷新"这么多次；再卡就升级为「关掉所有页重开」(#5)——
                            # 破解"对中毒标签每 90s 刷一次、磨完 600s 才升级"造成的无限刷新死循环。
 
+    # ChatGPT 明确说"生图失败/工具报错"的话术（Image#2：I was unable to generate the image
+    # because the image-generation tool returned an error）。expect_image 时命中即视作本轮
+    # 生图失败——立刻换新对话重试，而不是傻等满 90s→180s→600s 计时器（Issue①"长时间没有响应"）。
+    GEN_ERROR_MARKERS = (
+        "unable to generate", "was unable to", "wasn't able to generate",
+        "can't generate", "cannot generate", "couldn't generate",
+        "returned an error", "error generating", "failed to generate",
+        "please send a new request", "无法生成", "未能生成", "生成失败",
+        "生成图片时出错", "无法完成生成",
+    )
+
+    def _reply_looks_like_gen_error(self, page) -> bool:
+        """expect_image 时，助手回复是一段文字且命中已知"生成失败/工具报错"话术。
+        命中→本轮生图判失败，立刻换新对话重试，不再空等计时器（Image#2 / Issue①）。"""
+        try:
+            txt = (self.last_reply_text(page) or "").lower()
+        except Exception:
+            return False
+        return any(m in txt for m in self.GEN_ERROR_MARKERS)
+
+    def _dump_dom(self, page, reason: str):
+        """抓图失败/超时时把最后一条助手回复的 DOM + 所有图片信息落盘到 logs/，
+        便于日后按真实页面精修 _last_image_handle 的选择器（我这边看不到线上 ChatGPT DOM，
+        靠这份快照就能对症修 Issue④"明明出图却抓不到"）。任何异常都吞掉，绝不连累生成流程。"""
+        try:
+            import os
+            os.makedirs("logs", exist_ok=True)
+            info = page.evaluate(
+                """() => {
+                    const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+                    const root = msgs.length ? msgs[msgs.length - 1] : document.body;
+                    const imgs = [...document.querySelectorAll('img')].map(el => ({
+                        alt: el.alt || '',
+                        cls: (typeof el.className === 'string' ? el.className : ''),
+                        w: el.naturalWidth, h: el.naturalHeight, complete: el.complete,
+                        role: el.closest('[data-message-author-role]')
+                            ? el.closest('[data-message-author-role]').getAttribute('data-message-author-role') : '',
+                        src: (el.currentSrc || el.src || '').slice(0, 80)
+                    }));
+                    return { html: (root.outerHTML || '').slice(0, 200000), imgs };
+                }""")
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            path = os.path.join("logs", f"chatgpt_dump_{ts}.html")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"<!-- reason: {reason} -->\n")
+                f.write("<!-- imgs: " + repr(info.get("imgs")) + " -->\n")
+                f.write(info.get("html", ""))
+            self.log(f"（已存 ChatGPT 页面快照到 {path}，若确已出图却抓不到，发给开发者可精准修复选择器）")
+            return path
+        except Exception:
+            return None
+
     def _wait_reply_done(self, page, before_count: int, timeout: int, expect_image: bool):
         deadline = time.time() + timeout
         last_activity = time.time()
@@ -516,10 +585,13 @@ class ChatGPTClient:
 
         # 阶段二：等流式输出/生图结束：停止按钮消失并保持消失
         quiet = 0
+        dumped = False              # 抓不到图时只落一次 DOM 快照，别刷屏
+        text_seen, text_stable = "", 0   # 文本：连续若干拍不再增长才算输出完成
         while time.time() < deadline:
             self._raise_if_cancelled()   # 用户提前结束 → 立即中止(#6b)
             if check_nudge():
                 quiet = 0
+                text_seen, text_stable = "", 0
             if expect_image and self._last_image_handle(page) is not None:
                 return
             if is_streaming():
@@ -532,27 +604,46 @@ class ChatGPTClient:
                     if expect_image:
                         if self._last_image_handle(page) is not None:
                             return
+                        # ChatGPT 明确回复"生图失败/工具报错"(Image#2)：别再空等计时器，
+                        # 立刻抛错让 send() 换新对话重试（新对话通常就能绕过这次工具错误）。
+                        if self._reply_looks_like_gen_error(page):
+                            raise ChatGPTError(
+                                "ChatGPT 回复生图失败（image-generation tool returned an error）——"
+                                "换新对话立即重试，不空等计时器。")
                         # 输出停了却没抓到图：先看是不是图还在解码（naturalWidth=0）——是则继续等它
                         # load 完，别急着刷新（假死误判的常见来源）。真没图再走原来的刷新兜底。
                         if self._image_loading_pending(page):
                             last_activity = time.time()
                         elif time.time() - last_activity > self.RELOAD_INTERVAL:
+                            if not dumped:      # 刷新前先存快照：万一确已出图只是选择器没命中
+                                self._dump_dom(page, "生成结束但未抓到生成图")
+                                dumped = True
                             stuck_escalate("生成似乎结束但图片没出现，页面可能假死")
                             quiet = 0
                     else:
-                        # 文本：流式停了，但必须**真的有文字**才算完成。空文本几乎都是
-                        # "助手容器已建、内容还没渲染进来"的竞态——导演首轮带图上传尤其常见。
-                        # 若此时返回空串，上层会判成"英文提示词偏短/缺失（空）"(Image#9)。
-                        # 所以空就继续等；久久为空再刷新，绝不返回空。
-                        if self.last_reply_text(page).strip():
-                            return
-                        quiet = 0
-                        if time.time() - last_activity > self.RELOAD_INTERVAL:
+                        # 文本：流式停了，还必须**文字连续 need 拍不再变化**才算真输出完——
+                        # 只要非空就返回会把流式中途的"正在分析 3 幅图片…"当终稿，害上层判成
+                        # "英文提示词偏短/缺失"(Issue③/Image#9)。空文本同样继续等，绝不返回空。
+                        cur = self.last_reply_text(page).strip()
+                        if cur and cur == text_seen:
+                            text_stable += 1
+                            if text_stable >= need:
+                                return
+                        else:
+                            text_stable = 0
+                            text_seen = cur
+                            if cur:
+                                last_activity = time.time()   # 文字还在长=有活动，不算卡死
+                        quiet = need   # 停在阈值：下一拍继续判稳定，不必再从 0 数起
+                        if not cur and time.time() - last_activity > self.RELOAD_INTERVAL:
                             stuck_escalate("回复容器已出现但文字始终为空，页面可能假死")
+                            text_seen, text_stable = "", 0
             if force_ceiling():   # 一直"生成中"转圈也照样兜底强制刷新
                 quiet = 0
             page.wait_for_timeout(1000)
         if expect_image:
+            if not dumped:
+                self._dump_dom(page, "超时仍未抓到生成图")
             raise ChatGPTError(f"等了 {timeout}s 图片仍未生成完成（可能额度用尽或排队），请到 Chrome 里确认。")
         # 文本：走到这里=超时仍没拿到非空回复 → 抛错让 send() 自愈重试，绝不返回空串
         # （空串会被上层当成"提示词缺失"，是 Image#9 报错的根）。
@@ -653,16 +744,27 @@ class ChatGPTClient:
         try:
             handle = self._last_image_handle(page)
             if handle is None:
+                self.log("（未定位到生成图 <img>——落 DOM 快照供修选择器）")
+                self._dump_dom(page, "download: 未定位到生成图 handle")
                 return False
             src = handle.evaluate("el => el.currentSrc || el.src || ''")
             raw = self._fetch_image_bytes(page, handle, src)
-            if not raw or len(raw) < 10000:  # 太小说明抓到的是图标/占位图
+            n = len(raw) if raw else 0
+            if not raw or n < 10000:  # 太小说明抓到的是图标/占位缩略图
+                scheme = (src.split(":", 1)[0] if src else "空")
+                self.log(f"（图已识别但取字节异常：scheme={scheme} bytes={n} src={src[:90]!r}"
+                         "——已落 DOM 快照，发我可精修抓图）")
+                self._dump_dom(page, f"download: 字节过小/为空 bytes={n} src={src[:120]}")
                 return False
             with open(save_path, "wb") as f:
                 f.write(raw)
             return True
         except Exception as e:
-            self.log(f"（下载生成图失败：{e!r}；本轮按未抓到图处理）")
+            self.log(f"（下载生成图失败：{e!r}；已落 DOM 快照，本轮按未抓到图处理）")
+            try:
+                self._dump_dom(page, f"download: 异常 {e!r}")
+            except Exception:
+                pass
             return False
 
     def _fetch_image_bytes(self, page, handle, src: str):
@@ -672,14 +774,17 @@ class ChatGPTClient:
         if src.startswith("data:") and "," in src:
             return base64.b64decode(src.split(",", 1)[1])
         if src.startswith("http"):
-            try:
-                resp = page.request.get(src)
-                if resp.ok:
-                    body = resp.body()
-                    if body:
-                        return body
-            except Exception:
-                pass  # 极少数：request 也拿不到，退回页内 fetch 再试一次
+            # 带上 referer（部分跨域 CDN 缺 referer 会 403）；签名图偶发短暂未就绪，重试一次。
+            for attempt in range(2):
+                try:
+                    resp = page.request.get(src, headers={"referer": page.url})
+                    if resp.ok:
+                        body = resp.body()
+                        if body:
+                            return body
+                except Exception:
+                    pass
+                time.sleep(0.8)
         # blob: 或 http 兜底：页内 fetch（仅同源/blob 有效），失败返回空串而非抛错
         data_url = handle.evaluate(
             """async el => {

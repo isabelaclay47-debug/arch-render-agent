@@ -378,6 +378,14 @@
       Gemini 模型
       <select id="geminiModelSel" onchange="changeGeminiModel(this.value)" style="font:inherit;padding:2px 4px"></select>
     </label>
+    <label class="btn-ghost" id="geminiSelfrunWrap" style="display:none;align-items:center;gap:6px;cursor:pointer"
+           title="Gemini 分工：全包＝选 Gemini 就只启动 Gemini，理解/提示词/查篡改/翻译与生图都由它做，只登录 gemini.google.com；借 ChatGPT＝Gemini 只生图、仍连 ChatGPT 做文字推理（需同时登录 ChatGPT）。任务进行中不可切，下次「开始渲染」生效。">
+      分工
+      <select id="geminiSelfrunSel" onchange="changeGeminiSelfrun(this.value)" style="font:inherit;padding:2px 4px">
+        <option value="1">Gemini 全包（只启动 Gemini）</option>
+        <option value="0">借 ChatGPT 当导演</option>
+      </select>
+    </label>
     <label class="btn-ghost" style="display:flex;align-items:center;gap:6px;cursor:pointer"
            title="最终输出图的画质：本地 AI 超分（Swin2SR），离线免账号。1K=原生不放大；2K/4K/8K 会在出图后本地放大补细节（高档位需数分钟）。只增强最终交付图，不影响过程与生图速度。">
       画质
@@ -1419,9 +1427,10 @@ async function changeEngine(v) {
       alert("已切到 Gemini 生图。\n请确认专用 Chrome 里已登录 gemini.google.com。"
           + "\n在下面「Gemini 模型」下拉里选生图模型即可，开始渲染后会自动切到它。下次「开始渲染」生效。");
     }
-    // 引擎变了立即显隐 Gemini 模型下拉（不必等下一次轮询）
+    // 引擎变了立即显隐 Gemini 模型下拉 + 分工开关（不必等下一次轮询）
     const gw = $("geminiModelWrap"); if (gw) gw.style.display = (v === "gemini") ? "flex" : "none";
-    checkConn();   // 引擎变了立即重新检测登录：Gemini 会查 Gemini＋ChatGPT，ChatGPT 只查 ChatGPT
+    const sw = $("geminiSelfrunWrap"); if (sw) sw.style.display = (v === "gemini") ? "flex" : "none";
+    checkConn();   // 引擎变了立即重新检测登录：Gemini 全包只查 Gemini，借 ChatGPT 才连带查 ChatGPT
     checkNet();     // Gemini 引擎还需能连 Google，引擎变了重探一次网络可达性
   } catch (e) { alert("切换失败：" + e.message); }
 }
@@ -1451,6 +1460,23 @@ function syncGeminiModels(s) {
   }
   if (s.gemini_model && document.activeElement !== sel) sel.value = s.gemini_model;
   sel.disabled = !["idle", "done", "error"].includes(s.state);
+  // 分工开关：引擎=gemini 时显示，回显当前值、运行中禁用
+  const sw = $("geminiSelfrunWrap"), ssel = $("geminiSelfrunSel");
+  if (sw && ssel) {
+    sw.style.display = (s.image_engine === "gemini") ? "flex" : "none";
+    if (typeof s.gemini_selfrun === "boolean" && document.activeElement !== ssel)
+      ssel.value = s.gemini_selfrun ? "1" : "0";
+    ssel.disabled = !["idle", "done", "error"].includes(s.state);
+  }
+}
+
+async function changeGeminiSelfrun(v) {
+  try {
+    const r = await (await fetch("/api/set_gemini_selfrun", { method: "POST",
+      headers: {"Content-Type":"application/json"}, body: JSON.stringify({ selfrun: v === "1" }) })).json();
+    if (!r.ok) { alert(r.msg || "切换分工失败"); return; }
+    checkConn();   // 分工变了：全包只查 Gemini，借 ChatGPT 要连带查 ChatGPT
+  } catch (e) { alert("切换分工失败：" + e.message); }
 }
 
 async function changeQuality(v) {

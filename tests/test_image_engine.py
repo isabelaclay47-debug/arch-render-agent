@@ -72,17 +72,24 @@ def test_gemini_client_shares_stalled_error():
 
 
 def test_login_targets_follow_engine():
-    # ChatGPT 引擎只查 ChatGPT；Gemini 引擎要查 Gemini(出图)＋ChatGPT(导演)，且 Gemini 在前
+    # ChatGPT 引擎只查 ChatGPT；Gemini 引擎按分工：全包(默认)只查 Gemini，
+    # 借 ChatGPT 才连带查 ChatGPT。Gemini 恒在前（启动时前台先登）。
     appmod.set_image_engine("chatgpt")
     t = appmod._login_targets()
     assert [x[0] for x in t] == ["ChatGPT"]
     try:
         appmod.set_image_engine("gemini")
+        appmod.set_gemini_selfrun(True)              # 全包：选 Gemini 就只启动 Gemini
+        t = appmod._login_targets()
+        assert [x[0] for x in t] == ["Gemini"]
+        assert "gemini.google.com" in t[0][2]
+        appmod.set_gemini_selfrun(False)             # 借 ChatGPT 当导演：两个都要登
         t = appmod._login_targets()
         assert [x[0] for x in t] == ["Gemini", "ChatGPT"]
-        assert "gemini.google.com" in t[0][2]        # 启动时先弹 Gemini 让用户登
+        assert "gemini.google.com" in t[0][2]
     finally:
         appmod.set_image_engine("chatgpt")
+        appmod.set_gemini_selfrun(True)
 
 
 def test_set_gemini_model_rejects_unknown():
