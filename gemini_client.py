@@ -739,18 +739,31 @@ class GeminiClient:
                 except Exception:
                     pass
                 time.sleep(0.8)
-        # blob: 或 http 兜底：页内 fetch（仅同源/blob 有效），失败返回空串而非抛错
+        # blob:（Gemini 生成图正是 blob:https://gemini.google.com/…）或同源图兜底：
+        #   先试页内 fetch→FileReader；被 CSP 挡/失败时，改用 canvas 导出——blob 与页面**同源**，
+        #   画布不会被污染，toDataURL 可正常导出。两条都失败才返回空串（绝不抛错）。
         data_url = handle.evaluate(
             """async el => {
                 try {
                     const r = await fetch(el.currentSrc || el.src);
-                    const b = await r.blob();
-                    return await new Promise(res => {
-                        const fr = new FileReader();
-                        fr.onload = () => res(fr.result);
-                        fr.onerror = () => res('');
-                        fr.readAsDataURL(b);
-                    });
+                    if (r && r.ok) {
+                        const b = await r.blob();
+                        const d = await new Promise(res => {
+                            const fr = new FileReader();
+                            fr.onload = () => res(fr.result);
+                            fr.onerror = () => res('');
+                            fr.readAsDataURL(b);
+                        });
+                        if (d) return d;
+                    }
+                } catch (e) {}
+                try {                                   // fetch 被 CSP 挡 → canvas 导出（同源 blob 不污染）
+                    const w = el.naturalWidth, h = el.naturalHeight;
+                    if (!w || !h) return '';
+                    const c = document.createElement('canvas');
+                    c.width = w; c.height = h;
+                    c.getContext('2d').drawImage(el, 0, 0);
+                    return c.toDataURL('image/png');
                 } catch (e) { return ''; }
             }"""
         )
