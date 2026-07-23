@@ -209,10 +209,11 @@ def set_gemini_model(m: str) -> str:
     return canon
 
 
-# Gemini 分工开关（仅引擎=gemini 时有意义）：
-#   True（默认）＝Gemini 全包——选 Gemini 就**只启动 Gemini**，它既做文字推理（理解/提示词/
+# Gemini 分工（仅引擎=gemini 时有意义）——**默认且唯一对用户呈现的行为是「全包」**，界面不再给开关：
+#   True（默认）＝Gemini 全包：选 Gemini 就**只启动 Gemini**，它既做文字推理（理解/提示词/
 #     查篡改/翻译）又生图，只需登录 gemini.google.com，全程不碰 ChatGPT。
-#   False＝Gemini 只生图、仍连 ChatGPT 当导演做文字推理（旧行为，两个都启动）。
+#   False＝Gemini 只生图、仍连 ChatGPT 当导演（旧行为）——保留为**隐藏兜底**，仅供
+#     环境变量 ARA_GEMINI_SELFRUN=0 或调试用，普通用户无从触及。
 def _truthy(v) -> bool:
     if isinstance(v, bool):
         return v
@@ -1156,7 +1157,6 @@ def api_status():
         data["quality"] = _quality             # 当前画质档位，供前端下拉回显
         data["gemini_model"] = _gemini_model   # 当前 Gemini 生图模型，引擎=gemini 时前端下拉回显
         data["gemini_models"] = list(_GEMINI_MODELS)  # 可选模型清单，供前端渲染下拉
-        data["gemini_selfrun"] = _gemini_selfrun  # Gemini 全包(只启动Gemini) / 借ChatGPT当导演，供开关回显
         data["build"] = APP_BUILD              # 运行中代码版本标记，供确认「重启是否生效」
     return jsonify(data)
 
