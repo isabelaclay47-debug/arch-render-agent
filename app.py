@@ -1397,8 +1397,13 @@ def api_launch_chrome():
         return jsonify({"ok": False,
                         "msg": "没找到 Chrome，请确认已安装 Google Chrome"}), 400
     urls = [t[2] for t in _login_targets()]
+    # 禁用扩展：Grammarly/翻译类插件会往 ChatGPT/Gemini 输入框注入浮层，拦截发送按钮的
+    # 指针事件（"发送按钮点击未生效"）、甚至改动 DOM 影响抓图。专用 Chrome 只用于自动化，
+    # 关掉扩展最干净；登录 cookie 在 user-data-dir 里，不受影响。
     subprocess.Popen([chrome, f"--remote-debugging-port={CDP_PORT}",
                       f"--user-data-dir={_chrome_profile_arg(chrome)}",
+                      "--disable-extensions",
+                      "--disable-component-extensions-with-background-pages",
                       "--no-first-run", "--no-default-browser-check", *urls])
     return jsonify({"ok": True})
 

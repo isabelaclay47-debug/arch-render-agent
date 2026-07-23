@@ -144,6 +144,35 @@ def test_reply_looks_like_gen_error_detects_markers():
     assert client._reply_looks_like_gen_error(object()) is False
 
 
+def test_click_send_uses_js_click_when_overlay_blocks(monkeypatch):
+    """常规 btn.click() 被扩展浮层拦截(抛错)时，改用 JS el.click() 完成发送——不抛错。
+    复现 Image#19「发送按钮点击未生效」：Grammarly/翻译插件浮层挡住指针事件。"""
+    monkeypatch.setattr(cc.time, "time", lambda: _now[0])
+    _now[0] = 1000.0
+    client = ChatGPTClient(log=lambda *a, **k: None)
+
+    class Loc:
+        def __init__(s, page, sel): s.page, s.sel = page, sel
+        @property
+        def first(s): return s
+        def is_visible(s):
+            return s.page.sent if s.sel == cc.SEL["stop"] else True  # 发出后才现停止键
+        def is_enabled(s): return True
+        def click(s, timeout=None): raise RuntimeError("intercepted by overlay")
+        def evaluate(s, script): s.page.sent = True                  # JS click 生效
+        def count(s): return 0
+        def inner_text(s): return "" if s.page.sent else "草稿"
+
+    class Page:
+        def __init__(s): s.sent = False
+        def locator(s, sel): return Loc(s, sel)
+        def wait_for_timeout(s, ms): _now[0] += ms / 1000.0
+
+    page = Page()
+    client._click_send(page, before_count=0)   # 不抛错即通过
+    assert page.sent is True
+
+
 def test_chatgpt_dump_dom_writes_snapshot(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     class P:

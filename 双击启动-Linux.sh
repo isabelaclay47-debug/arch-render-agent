@@ -29,6 +29,7 @@ CHROME="$(command -v google-chrome-stable || command -v google-chrome || command
 if [ -n "$CHROME" ]; then
   echo "正在打开专用 Chrome，首次请登录 chatgpt.com（或 gemini.google.com），登录后别关那个窗口。"
   "$CHROME" --remote-debugging-port=9333 --user-data-dir="$PWD/chrome-profile" \
+    --disable-extensions --disable-component-extensions-with-background-pages \
     --no-first-run --no-default-browser-check "https://chatgpt.com/" >/dev/null 2>&1 &
 else
   echo "[提示] 没找到 Chrome/Chromium。可先安装，或稍后在网页里点“启动 Chrome 去登录”。"

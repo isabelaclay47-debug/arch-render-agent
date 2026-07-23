@@ -459,27 +459,36 @@ class GeminiClient:
             except Exception:
                 pass
             page.wait_for_timeout(300)
+        # 三招轮着上：常规点击 → JS 直接派发 click（绕过扩展浮层对指针事件的拦截）→ 回车。
         for _ in range(4):
+            btn = page.locator(SEL["send"]).first
             try:
-                btn = page.locator(SEL["send"]).first
                 if btn.is_visible() and btn.is_enabled():
                     btn.click(timeout=4000)
-                else:
-                    page.locator(SEL["editor"]).first.click()
-                    page.keyboard.press("Enter")
             except Exception:
-                try:
-                    page.locator(SEL["editor"]).first.click()
-                    page.keyboard.press("Enter")
-                except Exception:
-                    pass
+                pass
+            if self._submitted(page, before_count):
+                return
+            try:                                   # JS click：无视浮层遮挡/actionability
+                btn.evaluate("el => el.click()")
+            except Exception:
+                pass
+            if self._submitted(page, before_count):
+                return
+            try:
+                page.locator(SEL["editor"]).first.click()
+                page.keyboard.press("Enter")
+            except Exception:
+                pass
             vend = time.time() + 4
             while time.time() < vend:
                 if self._submitted(page, before_count):
                     return
                 page.wait_for_timeout(400)
+        self._dump_dom(page, "发送按钮点击未生效（可能被浏览器扩展浮层拦截）")
         raise GeminiError(
-            "提示词已输入但多次尝试都没能发送出去（发送按钮点击未生效）。已自动重试。")
+            "提示词已输入但多次尝试都没能发送出去（发送按钮点击未生效）。已自动重试。"
+            "若反复出现：多为浏览器扩展浮层拦截，请用「一键启动」重开专用 Chrome（已默认禁用扩展）。")
 
     RELOAD_INTERVAL = 90
     STUCK_CEILING = 180
