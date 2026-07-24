@@ -361,7 +361,12 @@ class ChatGPTClient:
                 page.wait_for_timeout(500)
                 self._click_send(page, before)
                 self._wait_reply_done(page, before, timeout, expect_image)
-                return self.last_reply_text(page)
+                reply = self.last_reply_text(page)
+                # 带图却被反过来索要图片=附件抢跑没传上（Image#3）→抛可重试错，自愈会重新挂图重发，
+                # 而不是把"请上传图片"这条正常回复当成功返回、浪费一整轮。
+                if image_paths and self._reply_looks_like_missing_upload(reply):
+                    raise ChatGPTError("对方回复在索要图片，附件疑似上传未完成——重新挂图重发")
+                return reply
             except GenCancelled:
                 raise                        # 提前结束：不重试、不吞，直接上抛让上层收尾(#6b)
             except ChatGPTError as e:
@@ -384,19 +389,63 @@ class ChatGPTClient:
         inputs = page.locator(SEL["file_input"])
         if inputs.count() == 0:
             raise ChatGPTError("页面上找不到文件上传入口(input[type=file])，可能界面改版了。")
-        inputs.first.set_input_files(paths)
-        # 等上传处理完：发送按钮从禁用变为可用
-        deadline = time.time() + 120
-        while time.time() < deadline:
-            self._raise_if_cancelled()   # 上传可能等 2 分钟，也要能被提前结束打断(#6b)
-            btn = page.locator(SEL["send"]).first
+        need = len(paths)
+        t0 = time.time()
+        # 监听文件上传完成的网络响应作为"真传完"信号（ChatGPT 走 /backend-api/…/files 上传）。
+        # 只当加速器：即便 URL 启发式在某版本对不上，下面的 networkidle+按图数沉降也保底，绝不硬卡。
+        done = {"n": 0}
+
+        def _on_response(resp):
             try:
-                if btn.is_visible() and btn.is_enabled():
-                    return
+                u = resp.url
+                if ("/files" in u or "/upload" in u) and resp.request.method in ("POST", "PUT") and resp.ok:
+                    done["n"] += 1
             except Exception:
                 pass
-            page.wait_for_timeout(1000)
-        raise ChatGPTError("图片上传后 2 分钟内发送按钮仍不可用，上传可能失败。")
+
+        try:
+            page.on("response", _on_response)
+        except Exception:
+            pass
+        try:
+            inputs.first.set_input_files(paths)
+            # 1) 先等发送键可用（必要但**不充分**：ChatGPT 乐观 UI，文件一选中即 enable，此时可能还在传）
+            deadline = time.time() + 120
+            while True:
+                self._raise_if_cancelled()   # 上传可能等 2 分钟，也要能被提前结束打断(#6b)
+                btn = page.locator(SEL["send"]).first
+                try:
+                    if btn.is_visible() and btn.is_enabled():
+                        break
+                except Exception:
+                    pass
+                if time.time() >= deadline:
+                    raise ChatGPTError("图片上传后 2 分钟内发送按钮仍不可用，上传可能失败。")
+                page.wait_for_timeout(500)
+            # 2) 关键补丁：等附件**真正传完**再让上层发送，别在飞行途中就发（否则 ChatGPT 丢附件→索要图片）。
+            confirm_deadline = time.time() + 25
+            while time.time() < confirm_deadline:
+                self._raise_if_cancelled()
+                if done["n"] >= need:
+                    break                                   # 网络已确认全部上传完成
+                if time.time() - t0 > 5 and done["n"] == 0:
+                    break                                   # 5s 内一个上传响应都没匹配到→该启发式不适用，走保底
+                page.wait_for_timeout(300)
+            # 3) 保底沉降：无论网络计数是否达标，都再压一层缓冲，彻底消除抢跑窗口
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            page.wait_for_timeout(min(1200 * need, 5000))
+            try:
+                self.log(f"[attach] {need} 图上传：网络确认 {done['n']}/{need}，耗时 {time.time()-t0:.1f}s")
+            except Exception:
+                pass
+        finally:
+            try:
+                page.remove_listener("response", _on_response)
+            except Exception:
+                pass
 
     def _editor_text(self, page) -> str:
         try:
@@ -490,6 +539,26 @@ class ChatGPTClient:
         except Exception:
             return False
         return any(m in txt for m in self.GEN_ERROR_MARKERS)
+
+    # ChatGPT 是乐观 UI：文件一被选中、还在往服务器传时发送键就已可用（gemini 会等缩略图渲染好才 enable，
+    # 所以同一套判据 gemini 能用、ChatGPT 会抢跑）。抢跑发出去→附件被丢→ChatGPT 反过来索要图片。
+    # 这类"请上传图片"是一条**正常完成**的回复，过去被当成功文本返回、白白浪费一整轮（Image#3）。
+    # 命中→判定附件没传成功，抛可重试错走自愈：导演刷新重发/生图换对话重发，都会重新挂图。
+    MISSING_UPLOAD_MARKERS = (
+        "please upload the", "please upload two", "please upload both",
+        "upload the two images", "upload the original", "upload the base image",
+        "upload the reference", "without access to the original raster",
+        "so i can edit the correct source", "i don't see any image",
+        "i can't see the image", "no image was attached", "attach the image",
+        "请上传", "请先上传", "上传原图", "上传底图", "上传图片", "上传参考图",
+        "没有收到图", "未收到图", "看不到图片", "未看到图片", "没有图片",
+    )
+
+    def _reply_looks_like_missing_upload(self, reply_text: str) -> bool:
+        """回复是否是"对方在索要图片/没收到附件"的话术（Image#3 附件抢跑的现象）。
+        命中→本轮附件判为没传成功，上层抛可重试错重新挂图重发。传字符串，便于单测。"""
+        t = (reply_text or "").lower()
+        return any(m in t for m in self.MISSING_UPLOAD_MARKERS)
 
     def _dump_dom(self, page, reason: str):
         """抓图失败/超时时把最后一条助手回复的 DOM + 所有图片信息落盘到 logs/，
