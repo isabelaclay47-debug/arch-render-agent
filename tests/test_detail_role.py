@@ -43,3 +43,23 @@ def test_qc_prompt_backward_compatible_without_details():
     p = pe.qc_and_revise_prompt(3)  # detail_count 默认 0
     assert "第二张为本轮生成图" in p
     assert "细部" not in p
+
+
+# ---------------- Task 4: qc_image_paths 图序组装 ----------------
+
+def test_qc_image_paths_orders_base_details_output():
+    got = pe.qc_image_paths(
+        "base.png", "out.png",
+        ref_images=["m.png", "d1.png", "d2.png", "mood.png"],
+        ref_roles=["material", "detail", "detail", "mood"])
+    assert got == ["base.png", "d1.png", "d2.png", "out.png"]
+
+
+def test_qc_image_paths_no_details():
+    got = pe.qc_image_paths("base.png", "out.png", ref_images=["m.png"], ref_roles=["material"])
+    assert got == ["base.png", "out.png"]
+
+
+def test_qc_image_paths_tolerates_missing_roles():
+    got = pe.qc_image_paths("base.png", "out.png", ref_images=None, ref_roles=None)
+    assert got == ["base.png", "out.png"]

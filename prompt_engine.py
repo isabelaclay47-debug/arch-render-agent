@@ -220,6 +220,15 @@ def qc_and_revise_prompt(iteration: int, detail_count: int = 0) -> str:
 </新提示词>"""
 
 
+def qc_image_paths(fidelity_base, output_img, ref_images=None, ref_roles=None):
+    """QC 发给导演的图序：主底图 → 各细部图(role=detail，按上传序) → 本轮生成图。
+    细部张数 = len(结果) - 2，喂给 qc_and_revise_prompt 的 detail_count。"""
+    ref_images = list(ref_images or [])
+    ref_roles = list(ref_roles or [])
+    details = [img for img, role in zip(ref_images, ref_roles) if role == "detail"]
+    return [fidelity_base, *details, output_img]
+
+
 def feedback_prompt(user_feedback: str) -> str:
     """把建筑师点评注入导演对话，要求据此修订双语提示词。"""
     return f"""建筑师本人看过目前的过程图后，给出如下点评，这是最高优先级的修改依据，必须逐条落实：
