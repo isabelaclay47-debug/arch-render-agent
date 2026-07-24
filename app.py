@@ -815,8 +815,11 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             # 图已成功落盘。QC（导演对话）若因网页异常失败，绝不能把这张图和整个会话一起丢掉——
             # 保留成图、给个兜底结论、下一轮从原图重画即可（需求③/⑦：会话不结束、成果不丢）。
             try:
-                qc_reply = client.send(client.director_page, pe.qc_and_revise_prompt(i),
-                                       image_paths=[fidelity_base, img_path])
+                qc_imgs = pe.qc_image_paths(fidelity_base, img_path, ref_images, ref_roles)
+                qc_reply = client.send(
+                    client.director_page,
+                    pe.qc_and_revise_prompt(i, detail_count=len(qc_imgs) - 2),
+                    image_paths=qc_imgs)
                 parsed = pe.parse_director_reply(qc_reply)
             except ChatGPTError as e:
                 log(f"⚠ 出图成功但篡改检查时 ChatGPT 未响应（{e}）——已保留此图，下一轮从原图重画。")
