@@ -715,9 +715,17 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
         if len(prompt) < 40:
             _dname = "Gemini" if gemini_solo else "ChatGPT"
             _dsite = "gemini.google.com" if gemini_solo else "chatgpt.com"
+            # 取证：导演空回复这条路径过去不落 DOM 快照，导致每次都盲修。抓一份导演页快照，
+            # 便于判断到底是"回复正常但抓取选择器没命中"还是"思考期被判完成→取到空"。
+            try:
+                client._dump_dom(client.director_page,
+                                 f"导演两次都没给出可用英文提示词（{_dname}），最后原始回复={reply[:80]!r}")
+            except Exception:
+                pass
             raise ChatGPTError(
                 f"导演对话两次都没给出可用的英文提示词。多半是 {_dname} 网页异常、未真正登录，"
-                f"或回答被中途停止——请到专用 Chrome 窗口看一眼 {_dsite} 是否有弹窗/验证，再重试。")
+                f"或回答被中途停止——请到专用 Chrome 窗口看一眼 {_dsite} 是否有弹窗/验证，再重试。"
+                f"（已存页面快照到 logs/，发我可精准定位）")
         log("第一版提示词已生成。")
 
         def director_adjust(edited_zh: str, note: str):
