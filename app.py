@@ -713,9 +713,11 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             prompt_zh = parsed["prompt_zh"] or prompt_zh
             prompt = parsed["prompt_en"] or prompt
         if len(prompt) < 40:
+            _dname = "Gemini" if gemini_solo else "ChatGPT"
+            _dsite = "gemini.google.com" if gemini_solo else "chatgpt.com"
             raise ChatGPTError(
-                "导演对话两次都没给出可用的英文提示词。多半是 ChatGPT 网页异常或未真正登录——"
-                "请到专用 Chrome 窗口看一眼是否有弹窗/验证，再重试。")
+                f"导演对话两次都没给出可用的英文提示词。多半是 {_dname} 网页异常、未真正登录，"
+                f"或回答被中途停止——请到专用 Chrome 窗口看一眼 {_dsite} 是否有弹窗/验证，再重试。")
         log("第一版提示词已生成。")
 
         def director_adjust(edited_zh: str, note: str):
@@ -1157,6 +1159,7 @@ def api_status():
         data["quality"] = _quality             # 当前画质档位，供前端下拉回显
         data["gemini_model"] = _gemini_model   # 当前 Gemini 生图模型，引擎=gemini 时前端下拉回显
         data["gemini_models"] = list(_GEMINI_MODELS)  # 可选模型清单，供前端渲染下拉
+        data["gemini_selfrun"] = _gemini_selfrun  # Gemini 全包 / 借 ChatGPT 当导演，供分工开关回显
         data["build"] = APP_BUILD              # 运行中代码版本标记，供确认「重启是否生效」
     return jsonify(data)
 

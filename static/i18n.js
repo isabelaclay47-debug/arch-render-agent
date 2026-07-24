@@ -40,6 +40,8 @@
     "更新中…": "Updating…",
     "生图引擎": "Image engine",
     "Gemini 模型": "Gemini model",
+    "提示词导演": "Prompt director",
+    "谁来当导演写提示词（仅 Gemini 引擎时可选）：全包＝只启动 Gemini，理解/提示词/查篡改/翻译与生图都由它做，只登录 gemini.google.com；借 ChatGPT＝Gemini 只画图、由 ChatGPT 当导演做文字推理（需同时登录 ChatGPT）。任务进行中不可切，下次「开始渲染」生效。": "Who directs the prompt (only selectable with the Gemini engine): All-in-one = launch Gemini only; it handles understanding, prompting, tamper checks, translation and image generation, needing only a gemini.google.com sign-in. Borrow ChatGPT = Gemini only draws while ChatGPT directs the text reasoning (requires signing in to ChatGPT too). You cannot switch during a task; the choice applies to the next render.",
     "分工": "Roles",
     "Gemini 全包（只启动 Gemini）": "Gemini does everything (Gemini only)",
     "借 ChatGPT 当导演": "Use ChatGPT as director",
