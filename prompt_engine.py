@@ -348,9 +348,18 @@ def generation_message_multi(prompt_en: str, roles, quality: str = "标准",
     role_lines = "\n".join(
         f"- Image {idx + 2} is {REF_ROLE_EN.get(r, REF_ROLE_EN['generic'])}."
         for idx, r in enumerate(roles))
+    # 细部图必须忠实还原；其余参照绝不照抄形体。分流表述，避免"绝不照抄"误伤细部图。
+    if any(r == "detail" for r in roles):
+        copy_rule = ("For reference images that are materials, mood, content or drawing "
+                     "references, never copy their geometry, composition, camera or layout. "
+                     "For DETAIL images, faithfully reproduce the detail they show in the "
+                     "corresponding part of the BASE — its content, geometry, proportions, "
+                     "materials and any text must match.")
+    else:
+        copy_rule = "Never copy a reference image's geometry, composition, camera or layout."
     return f"""I uploaded {len(roles) + 1} images. The FIRST image is the architectural BASE — keep its exact geometry, composition, camera, proportions and site content. The other images are references, each with a specific role:
 {role_lines}
-Never copy a reference image's geometry, composition, camera or layout. Generate ONE photorealistic architectural render of the BASE image, applying the prompt below. Output the image directly — no questions, no explanation, do NOT describe or analyze the uploaded images. {extras}
+{copy_rule} Generate ONE photorealistic architectural render of the BASE image, applying the prompt below. Output the image directly — no questions, no explanation, do NOT describe or analyze the uploaded images. {extras}
 
 {prompt_en}
 

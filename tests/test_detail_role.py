@@ -12,3 +12,19 @@ def test_detail_role_registered():
     en = pe.REF_ROLE_EN["detail"].lower()
     assert "faithfully reproduced" in en
     assert "must" in en
+
+
+# ---------------- Task 2: 生图提示词按角色分流 ----------------
+
+def test_generation_message_detail_is_faithful_others_not():
+    msg = pe.generation_message_multi("PROMPT", ["material", "detail"]).lower()
+    # footer 的分流约束：细部图强忠实（不只是角色行里的描述）
+    assert "for detail images, faithfully reproduce" in msg
+    # 非细部参照仍被明确禁止照抄形体
+    assert "never copy their geometry" in msg
+
+
+def test_generation_message_no_detail_keeps_blanket_rule():
+    msg = pe.generation_message_multi("PROMPT", ["material", "mood"])
+    assert "never copy a reference image" in msg.lower()
+    assert "faithfully reproduce" not in msg.lower()
