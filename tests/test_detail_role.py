@@ -28,3 +28,18 @@ def test_generation_message_no_detail_keeps_blanket_rule():
     msg = pe.generation_message_multi("PROMPT", ["material", "mood"])
     assert "never copy a reference image" in msg.lower()
     assert "faithfully reproduce" not in msg.lower()
+
+
+# ---------------- Task 3: QC 提示词 detail_count ----------------
+
+def test_qc_prompt_mentions_details_when_present():
+    p = pe.qc_and_revise_prompt(3, detail_count=2)
+    assert "中间 2 张" in p
+    assert "细部" in p
+    assert "逐张核对" in p
+
+
+def test_qc_prompt_backward_compatible_without_details():
+    p = pe.qc_and_revise_prompt(3)  # detail_count 默认 0
+    assert "第二张为本轮生成图" in p
+    assert "细部" not in p
