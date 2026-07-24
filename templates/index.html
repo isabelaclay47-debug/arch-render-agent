@@ -432,7 +432,7 @@
       <button class="btn-ghost" type="button" style="width:100%;margin-top:8px"
               onclick="annotateBase()">✏️ 标注底图 <small>— 箭头/文字/椭圆/画笔 · 可改颜色粗细</small></button>
 
-      <label>意向图 <small>— 可选多张；每张可选角色（通用/材质/氛围/换入内容/图纸），不选=通用参考，会连同底图一起发给生图 AI</small></label>
+      <label>意向图 <small>— 可选多张；每张可选角色（通用/材质/氛围/换入内容/图纸/细部·必须保留），标「细部·必须保留」的会当强忠实约束、逐张进篡改检查；不选=通用参考，都会连同底图发给生图 AI</small></label>
       <div class="drop" id="refDrop" onclick="refInput.click()">
         <input type="file" id="refInput" accept="image/*" multiple onchange="preview(this,'refThumbs')">
         <span id="refHint">点击选择意向图</span>
@@ -925,7 +925,8 @@ async function apiJson(url, options = {}) {
 // 意向图角色（与后端 prompt_engine.REF_ROLE_LABELS 一一对应）。用户可逐张定义，
 // 默认「通用参考」= 你说的「不定义每张（除底图）」那种。
 const REF_ROLES = [["generic","通用参考"],["material","材质"],["mood","氛围/意向"],
-                   ["content","换入内容/物件"],["drawing","图纸"]];
+                   ["content","换入内容/物件"],["drawing","图纸"],
+                   ["detail","细部·必须保留"]];
 // 按 File 对象记角色：增删/重排图片都不会错位（File 对象稳定）
 const _refRoleMap = new WeakMap();
 
