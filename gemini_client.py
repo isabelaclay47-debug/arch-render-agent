@@ -447,9 +447,26 @@ class GeminiClient:
             pass
         return self._editor_text(page) == ""
 
+    def _is_streaming(self, page) -> bool:
+        """是否正在生成（停止键可见）——生成一旦开始就说明消息已发出去了。"""
+        try:
+            return page.locator(SEL["stop"]).first.is_visible()
+        except Exception:
+            return False
+
     def _click_send(self, page, before_count: int):
-        """发送并**确认发送生效**：点按钮/回车 → 验证；没生效就换招（回车↔再点）重试。
-        真发不出去才抛错让上层自愈——而不是傻等一个从没发出去的回复（#3 发送验证）。"""
+        """发送并**确认发送生效**：点一次 → 给确认窗口等提交生效；没生效才换招（回车）。
+        真发不出去才抛错让上层自愈——而不是傻等一个从没发出去的回复（#3 发送验证）。
+
+        ⚠️ 关键：Gemini 的发送键与停止键是**同一个按钮**（生成时原地变「停止」）。绝不能
+        像过去那样"点完立刻再 JS 点一次同一个按钮"——那一下会点到停止键、把刚发起的生成
+        掐断（回复为空、页面显示「你已让系统停止这条回答」，Image#4 导演空回复根因）。
+        因此：每次点击后**先进确认窗口轮询**，确认已提交（出现停止键/输入框清空/新回复）就返回，
+        绝不在同一轮里二次点击按钮；兜底只用回车（作用于输入框，不碰那个会变停止的按钮）。"""
+        def sent() -> bool:
+            # 已进入生成（停止键出现）即视为发出去了；再叠加原有 _submitted 判据
+            return self._is_streaming(page) or self._submitted(page, before_count)
+
         deadline = time.time() + 15
         while time.time() < deadline:          # 等发送键从禁用变可用（打字后需一点时间 enable）
             try:
@@ -459,32 +476,33 @@ class GeminiClient:
             except Exception:
                 pass
             page.wait_for_timeout(300)
-        # 三招轮着上：常规点击 → JS 直接派发 click（绕过扩展浮层对指针事件的拦截）→ 回车。
-        for _ in range(4):
-            btn = page.locator(SEL["send"]).first
-            try:
-                if btn.is_visible() and btn.is_enabled():
-                    btn.click(timeout=4000)
-            except Exception:
-                pass
-            if self._submitted(page, before_count):
-                return
-            try:                                   # JS click：无视浮层遮挡/actionability
-                btn.evaluate("el => el.click()")
-            except Exception:
-                pass
-            if self._submitted(page, before_count):
+
+        def confirm_within(seconds: float) -> bool:
+            end = time.time() + seconds
+            while time.time() < end:
+                if sent():
+                    return True
+                page.wait_for_timeout(300)
+            return sent()
+
+        for i in range(4):
+            if sent():                          # 上一招可能已生效——先确认，绝不多点
                 return
             try:
-                page.locator(SEL["editor"]).first.click()
-                page.keyboard.press("Enter")
+                if i == 0:
+                    # 第一招：常规点击发送键（此刻它确是「发送」，还没变停止）
+                    btn = page.locator(SEL["send"]).first
+                    if btn.is_visible() and btn.is_enabled():
+                        btn.click(timeout=4000)
+                else:
+                    # 后续招：只用回车（针对输入框，不去碰那个已可能变成停止键的按钮）
+                    page.locator(SEL["editor"]).first.click()
+                    page.keyboard.press("Enter")
             except Exception:
                 pass
-            vend = time.time() + 4
-            while time.time() < vend:
-                if self._submitted(page, before_count):
-                    return
-                page.wait_for_timeout(400)
+            # 关键：点完给足确认窗口再决定要不要换招，别抢在提交生效前二次操作
+            if confirm_within(4):
+                return
         self._dump_dom(page, "发送按钮点击未生效（可能被浏览器扩展浮层拦截）")
         raise GeminiError(
             "提示词已输入但多次尝试都没能发送出去（发送按钮点击未生效）。已自动重试。"
