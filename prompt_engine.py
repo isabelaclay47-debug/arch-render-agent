@@ -326,10 +326,12 @@ REF_ROLE_EN = {
     "mood":     "a MOOD / intent reference — follow ONLY its lighting, color tone and atmosphere, not its geometry or content",
     "content":  "a CONTENT / object reference — bring the object or content it shows into the scene at correct scale, perspective and grounding",
     "drawing":  "a DRAWING / plan reference — follow its layout or proportion cues only where the prompt asks, never its rendering style",
+    "detail":   "a DETAIL that MUST be faithfully reproduced — its exact content, geometry, proportions, materials and any text must appear in the output wherever that part is visible; treat it as binding as the base image",
 }
 REF_ROLE_LABELS = {           # 供前端下拉/校验：角色键 → 中文标签
     "generic": "通用参考", "material": "材质", "mood": "氛围/意向",
     "content": "换入内容/物件", "drawing": "图纸",
+    "detail": "细部·必须保留",
 }
 
 
