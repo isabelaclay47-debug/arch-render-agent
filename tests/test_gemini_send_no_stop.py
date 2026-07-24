@@ -98,3 +98,48 @@ def test_click_send_does_not_double_click_into_stop():
     client = _new_client()
     client._click_send(page, before_count=0)
     assert page.clicks == 1, f"发送键被点了 {page.clicks} 次——二次点击会点到停止键掐断生成"
+
+
+# ---------------- _is_streaming 认 aria-busy（Gemini Pro 思考期无停止键，Image#5 dump 实证）----------------
+
+class _AriaBusyPage:
+    """真实 dump 证明：停止/完成态 aria-busy='false'，生成/思考中 aria-busy='true'，
+    且 Pro 思考期不露可匹配的停止键。_is_streaming 必须靠 aria-busy 也能判出'生成中'。"""
+    def __init__(self, stop_visible, aria_busy):
+        self._stop = stop_visible
+        self._busy = aria_busy
+
+    def locator(self, _sel):
+        page = self
+
+        class _Btn:
+            def is_visible(self_inner):
+                return page._stop
+
+        class _Loc:
+            @property
+            def first(self_inner):
+                return _Btn()
+
+        return _Loc()
+
+    def evaluate(self, _js):
+        return self._busy
+
+
+def test_is_streaming_true_from_aria_busy_without_stop_button():
+    """没有停止键、但 aria-busy=true（Pro 思考期）→ 判为生成中，避免完成判定抢跑。"""
+    client = _new_client()
+    assert client._is_streaming(_AriaBusyPage(stop_visible=False, aria_busy=True)) is True
+
+
+def test_is_streaming_false_when_done():
+    """停止键无 + aria-busy=false（完成/停止态）→ 判为非生成中。"""
+    client = _new_client()
+    assert client._is_streaming(_AriaBusyPage(stop_visible=False, aria_busy=False)) is False
+
+
+def test_is_streaming_true_from_stop_button_still_works():
+    """停止键可见（旧信号）仍算生成中。"""
+    client = _new_client()
+    assert client._is_streaming(_AriaBusyPage(stop_visible=True, aria_busy=False)) is True

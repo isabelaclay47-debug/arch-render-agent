@@ -448,9 +448,25 @@ class GeminiClient:
         return self._editor_text(page) == ""
 
     def _is_streaming(self, page) -> bool:
-        """是否正在生成（停止键可见）——生成一旦开始就说明消息已发出去了。"""
+        """是否正在生成/思考（生成一旦开始即说明消息已发出去）。
+        只看停止键会漏判 Gemini Pro 的"思考"期——它此时不露可匹配的停止键，但回复内容会带
+        aria-busy="true"（Image#5 真实 dump 确认：停止/完成态是 aria-busy="false"）。漏判会让
+        完成判定 3 秒抢跑→读到空/半截→"追问一次"那条把还在生成的回复取消→"你已让系统停止"。"""
         try:
-            return page.locator(SEL["stop"]).first.is_visible()
+            if page.locator(SEL["stop"]).first.is_visible():
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(page.evaluate("""() => {
+                const sel = 'model-response, .response-container, [id^="model-response-message-content"]';
+                const nodes = document.querySelectorAll(sel);
+                for (const el of nodes) {
+                    if (el.getAttribute && el.getAttribute('aria-busy') === 'true') return true;
+                    if (el.querySelector && el.querySelector('[aria-busy="true"]')) return true;
+                }
+                return false;
+            }"""))
         except Exception:
             return False
 
@@ -547,10 +563,8 @@ class GeminiClient:
             return False
 
         def is_streaming() -> bool:
-            try:
-                return page.locator(SEL["stop"]).first.is_visible()
-            except Exception:
-                return False
+            # 认 aria-busy="true"/停止键：Gemini Pro 思考期无停止键，只看停止键会抢跑判完成(Image#5)
+            return self._is_streaming(page)
 
         # 阶段一：等新的模型回复出现
         while time.time() < deadline:
