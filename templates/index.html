@@ -203,6 +203,18 @@
                  padding: 2px 10px; font-size: 11px; color: var(--wine);
                  letter-spacing: 2px; margin-bottom: 8px; font-family: var(--serif); }
   .item .verdict { color: var(--ink); line-height: 1.6; }
+  /* 检查结果摘要：状态灯 + 严重度计数条，让人不展开明细也能一眼看到本轮检查结论 */
+  .item .summary { margin-bottom: 6px; }
+  .item .summary .verdict { margin-top: 5px; }
+  .status-pill { display: inline-flex; align-items: center; gap: 6px;
+                 font-family: var(--serif); font-size: 11.5px; letter-spacing: 1px;
+                 padding: 2px 10px; border-radius: 2px; border: 1px solid currentColor; }
+  .status-pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
+                         background: currentColor; flex: none; }
+  .status-pill.sev-red    { color: var(--brick); }
+  .status-pill.sev-yellow { color: var(--gold); }
+  .status-pill.sev-green  { color: var(--sage); }
+  .status-pill.sev-grey   { color: var(--taupe); }
   details { margin-top: 7px; }
   details summary { cursor: pointer; color: var(--taupe); font-size: 11.5px; }
   details summary:hover { color: var(--wine); }
@@ -1412,7 +1424,7 @@ async function poll() {
         <img src="${url}" onclick="zoom('${url}')">
         <div class="meta">
           <span class="badge">第 ${it.iter} 轮 · ${it.kind === "edit" ? "局部修改" : "自动迭代"}</span>
-          <div class="verdict">${esc(it.verdict || "")}</div>
+          ${checkSummary(it.analysis, it.verdict)}
           <details><summary>篡改检查明细</summary><pre>${esc(it.analysis)}</pre></details>
           <details><summary>本轮${it.kind === "edit" ? "的修改指令" : "后的提示词"}</summary><pre>${esc(it.prompt)}</pre></details>
           <button class="editbtn" onclick="fillFeedback(${rendered})">📋 把这条评价填入点评框</button>
@@ -1425,6 +1437,48 @@ async function poll() {
   setTimeout(poll, 2000);
 }
 function esc(t) { const d = document.createElement("div"); d.textContent = t || ""; return d.innerHTML; }
+
+// 检查结果摘要：卡片顶部一眼看到本轮结论，不必展开「篡改检查明细」。
+// <结论> 常缺失/不规范（截图里就是空的），所以状态灯优先从 <分析> 的
+// [严重/中等/轻微] 清单里推算——这条最稳。分级阈值（可按需微调）：
+//   见「严重」→红·明显篡改；否则有「中等/轻微」→黄·需精修/小瑕疵；
+//   明说未发现问题→绿·检查通过；QC 未跑完→灰·检查未完成；都判不出→灰·已检查。
+function checkSummary(analysis, verdict) {
+  const a = (analysis || "").trim();
+  const v = (verdict  || "").trim();
+  const n = re => (a.match(re) || []).length;          // 容忍半角[]与全角【】
+  const severe = n(/[\[【]\s*严重\s*[\]】]/g);
+  const medium = n(/[\[【]\s*中等\s*[\]】]/g);
+  const minor  = n(/[\[【]\s*轻微\s*[\]】]/g);
+  const clean  = /未发现问题|无明显问题|完全一致|无问题/.test(a);
+  const undone = /未完成|未响应|未能生成/.test(a + v);   // QC 兜底：出图成功但没查成
+
+  let cls, label;
+  if      (severe)  { cls = "sev-red";    label = "明显篡改"; }
+  else if (medium)  { cls = "sev-yellow"; label = "需精修"; }
+  else if (minor)   { cls = "sev-yellow"; label = "小瑕疵"; }
+  else if (clean)   { cls = "sev-green";  label = "检查通过"; }
+  else if (undone)  { cls = "sev-grey";   label = "检查未完成"; }
+  else              { cls = "sev-grey";   label = "已检查"; }
+
+  const chips = [];
+  if (severe) chips.push(`严重×${severe}`);
+  if (medium) chips.push(`中等×${medium}`);
+  if (minor)  chips.push(`轻微×${minor}`);
+  const tally = chips.length ? " · " + chips.join(" ") : "";
+
+  // 结论句：优先导演的 <结论>；缺失时退回 <分析> 首条（去掉级别标签）当摘要句。
+  let sentence = v;
+  if (!sentence && a) {
+    const first = a.split(/\n/).map(s => s.trim()).filter(Boolean)[0] || "";
+    sentence = first.replace(/^[\[【]\s*(严重|中等|轻微)\s*[\]】]\s*/, "");
+  }
+
+  return `<div class="summary">`
+       + `<span class="status-pill ${cls}">${esc(label + tally)}</span>`
+       + (sentence ? `<div class="verdict">${esc(sentence)}</div>` : "")
+       + `</div>`;
+}
 
 /* ---------------- 生图引擎切换（ChatGPT / Gemini nano-banana） ---------------- */
 async function changeEngine(v) {
