@@ -448,6 +448,9 @@ def parse_director_reply(text: str) -> dict:
       analysis 分析 / verdict 结论 / fidelity 忠实度 / next_step 下一步
       refine_instruction 精修指令 / new_prompt 新提示词(英文重画)
     """
+    # 容忍全角尖括号 ＜标签＞（IME/模型偶发），先归一成半角再解析，不改变原语义。
+    text = (text or "").replace("＜", "<").replace("＞", ">")
+
     def grab(tag: str) -> str:
         m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.S)
         return m.group(1).strip() if m else ""
@@ -473,6 +476,22 @@ def parse_director_reply(text: str) -> dict:
             "prompt_en": prompt_en, "analysis": analysis, "verdict": verdict,
             "new_prompt": new_prompt, "fidelity": fidelity,
             "next_step": next_step, "refine_instruction": refine_instruction}
+
+
+def analysis_for_display(analysis, raw_reply="", limit: int = 1200) -> str:
+    """QC 分析展示兜底（Bug3「未解析出分析内容」）：
+    优先用结构化 <分析>；解析不出但**有原始回复**时，展示裁剪后的原始回复——让建筑师至少
+    看到导演的原话，而不是无用的"（未解析出分析内容）"占位；两者都没有才回占位符。"""
+    a = (analysis or "").strip()
+    if a:
+        return a
+    raw = (raw_reply or "").strip()
+    if raw:
+        clipped = raw[:limit].rstrip()
+        if len(raw) > len(clipped):
+            clipped += "…"
+        return f"（未按标准格式返回，以下为导演原始回复）\n{clipped}"
+    return "（未解析出分析内容）"
 
 
 def extract_questions(text: str) -> str:

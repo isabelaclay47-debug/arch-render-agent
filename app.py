@@ -822,6 +822,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
             log(f"第 {i} 轮出图完成，对比原图检查篡改与画质…")
             # 图已成功落盘。QC（导演对话）若因网页异常失败，绝不能把这张图和整个会话一起丢掉——
             # 保留成图、给个兜底结论、下一轮从原图重画即可（需求③/⑦：会话不结束、成果不丢）。
+            qc_reply = ""
             try:
                 qc_imgs = pe.qc_image_paths(fidelity_base, img_path, ref_images, ref_roles)
                 qc_reply = client.send(
@@ -849,7 +850,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                     next_mode = "redraw"  # 没拿到可精修的清单，兜底重画
             mode_label = "精修上一张" if next_mode == "refine" else "从原图重画"
             add_item(i, f"iter_{i:02d}.png", "auto",
-                     parsed["analysis"] or "（未解析出分析内容）",
+                     pe.analysis_for_display(parsed["analysis"], qc_reply),
                      parsed["verdict"], prompt)
             _update_meta(sess_dir, last_prompt_zh=prompt_zh, last_prompt_en=prompt)
             _persist_item_prompt(sess_dir, f"iter_{i:02d}.png", prompt,
@@ -923,7 +924,7 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                                    image_paths=[src, img_path])
             parsed = pe.parse_director_reply(qc_reply)
             add_item(i, f"iter_{i:02d}.png", "edit",
-                     parsed["analysis"] or "（未解析出分析内容）",
+                     pe.analysis_for_display(parsed["analysis"], qc_reply),
                      parsed["verdict"], f"（局部修改）{instruction}")
             _persist_item_prompt(sess_dir, f"iter_{i:02d}.png",
                                  f"（局部修改）{instruction}",

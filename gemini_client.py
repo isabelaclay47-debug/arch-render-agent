@@ -526,6 +526,21 @@ class GeminiClient:
 
     RELOAD_INTERVAL = 90
     STUCK_CEILING = 180
+    AUTO_RELOAD_CAP = 1    # 同一坏死页最多"就地自动刷新"这么多次；再卡就抛错让 send() 重连/换页——
+                           #  对中毒页无限刷新既没用又会反复把生成掐断(mirror chatgpt_client)。
+
+    # Gemini "生成被停止" 的系统占位消息标志（中英）——命中即视作本次生成失败、不是真回答。
+    STOP_MARKERS = ("你已让系统停止", "你已停止", "已停止生成", "已停止回答", "停止了这条回答",
+                    "you stopped this response", "response stopped", "stopped generating")
+
+    def _looks_stopped(self, text: str) -> bool:
+        """回复是否只是"你已让系统停止这条回答"这类停止占位消息（生成被中断留下的空壳）。
+        这类文本不是真正的回答——绝不能当有效回复返回，否则上层解析必为空、报"两次都没给出
+        可用英文提示词"（一开始就报错）或"未解析出分析内容"。命中即交给 send() 自愈重试。"""
+        if not text:
+            return False
+        low = text.strip().lower()
+        return any(m.lower() in low for m in self.STOP_MARKERS)
 
     def _raise_if_cancelled(self):
         """协作式取消(#6b)：用户点「提前结束」→ 立即抛 GenCancelled 中止当前等待。"""
@@ -535,7 +550,8 @@ class GeminiClient:
     def _wait_reply_done(self, page, before_count: int, timeout: int, expect_image: bool):
         deadline = time.time() + timeout
         last_activity = time.time()
-        last_reload = time.time()
+        last_reload = time.time()   # 上次刷新/本步开始时刻；不被流式指示重置，专供强制上限用
+        auto_reloads = 0            # 自动"卡死刷新"次数；超过 AUTO_RELOAD_CAP 就抛错让 send() 重连/换页
 
         def reload_page(reason: str):
             nonlocal last_activity, last_reload
@@ -548,16 +564,28 @@ class GeminiClient:
             last_activity = time.time()
             last_reload = time.time()
 
+        def stuck_escalate(reason: str):
+            """有界刷新：同一坏死页先就地刷新至多 AUTO_RELOAD_CAP 次；再卡就抛 GeminiError，
+            让 send() 走重连/换页重试，而不是对中毒页无限刷新（无限刷会反复把生成掐断）。"""
+            nonlocal auto_reloads
+            if auto_reloads >= self.AUTO_RELOAD_CAP:
+                raise GeminiError(f"{reason}：同页自动刷新 {auto_reloads} 次仍无进展，需重连/换页重试。")
+            auto_reloads += 1
+            reload_page(reason)
+
         def force_ceiling() -> bool:
             if (expect_image and self._last_image_handle(page) is None
                     and time.time() - last_reload > self.STUCK_CEILING):
-                reload_page(f"生图已超过 {self.STUCK_CEILING}s 仍未出图，强制刷新排除页面假死")
+                stuck_escalate(f"生图已超过 {self.STUCK_CEILING}s 仍未出图，强制刷新排除页面假死")
                 return True
             return False
 
         def check_nudge() -> bool:
+            # 人工干预=用户给了一次全新机会：重置自动刷新计数，只就地刷新、不升级
+            nonlocal auto_reloads
             if self.nudge and self.nudge.is_set():
                 self.nudge.clear()
+                auto_reloads = 0
                 reload_page("收到人工干预信号")
                 return True
             return False
@@ -575,9 +603,15 @@ class GeminiClient:
                 return
             if is_streaming():
                 last_activity = time.time()
+            elif not expect_image and self._page_alive(page):
+                # 文本导演：页面活着=Gemini Pro 正在"思考"（思考期常无停止键、无 aria-busy，回复
+                # 容器要等它想好了才出现）。绝不能因"迟迟没出现"就刷新——刷新会把思考中的回答掐断，
+                # Gemini 记成空白的"你已让系统停止这条回答"(Image#7/dump 20260727_094829 根因)。
+                # 只有页面**真死**（_page_alive=False）才走下面的有界刷新恢复。
+                last_activity = time.time()
             check_nudge()
             if time.time() - last_activity > self.RELOAD_INTERVAL:
-                reload_page("回复迟迟未出现，页面可能卡住")
+                stuck_escalate("回复迟迟未出现，页面可能卡住")
             else:
                 force_ceiling()
             page.wait_for_timeout(1000)
@@ -587,10 +621,12 @@ class GeminiClient:
         # 阶段二：等生成结束（停止按钮消失并保持消失）
         quiet = 0
         dumped = False
+        text_seen, text_stable = "", 0   # 文本：连续若干拍不再增长才算输出完成
         while time.time() < deadline:
             self._raise_if_cancelled()   # 用户提前结束 → 立即中止(#6b)
             if check_nudge():
                 quiet = 0
+                text_seen, text_stable = "", 0
             if expect_image and self._last_image_handle(page) is not None:
                 return
             if is_streaming():
@@ -600,28 +636,61 @@ class GeminiClient:
                 quiet += 1
                 need = 8 if expect_image else 3
                 if quiet >= need:
-                    if not expect_image or self._last_image_handle(page) is not None:
-                        return
-                    # 生成流已停但没抓到图。先判断是不是图还在加载（最常见的假死误判）：
-                    # 是 → 视作仍在活动、继续等它 decode 完，别 reload 把已到的图刷掉。
-                    if expect_image and self._image_loading_pending(page):
-                        last_activity = time.time()
-                        quiet = need         # 停在阈值：图一 load 完下一圈立即 return
-                    elif time.time() - last_activity > self.RELOAD_INTERVAL:
-                        if expect_image and not dumped:
-                            self._dump_dom(page, "生成结束但未抓到生成图")
-                            dumped = True
-                        reload_page("生成似乎结束但图片没出现，页面可能假死")
-                        quiet = 0
+                    if expect_image:
+                        if self._last_image_handle(page) is not None:
+                            return
+                        # 生成流已停但没抓到图。先判断是不是图还在加载（最常见的假死误判）：
+                        # 是 → 视作仍在活动、继续等它 decode 完，别 reload 把已到的图刷掉。
+                        if self._image_loading_pending(page):
+                            last_activity = time.time()
+                            quiet = need         # 停在阈值：图一 load 完下一圈立即 return
+                        elif time.time() - last_activity > self.RELOAD_INTERVAL:
+                            if not dumped:
+                                self._dump_dom(page, "生成结束但未抓到生成图")
+                                dumped = True
+                            stuck_escalate("生成似乎结束但图片没出现，页面可能假死")
+                            quiet = 0
+                    else:
+                        # 文本：流式停了，还要文字**非空且连续 need 拍稳定**才算真输出完。
+                        cur = self.last_reply_text(page).strip()
+                        if self._looks_stopped(cur):
+                            # "你已让系统停止这条回答"不是真回答：立刻抛错让 send() 自愈重试，
+                            # 绝不返回它（返回会害上层解析成空→一开始报错/未解析出分析内容）。
+                            raise GeminiError(
+                                "本轮回复是「你已让系统停止这条回答」（生成被中断），已自动重试。")
+                        if cur and cur == text_seen:
+                            text_stable += 1
+                            if text_stable >= need:
+                                return
+                        else:
+                            text_stable = 0
+                            text_seen = cur
+                            if cur:
+                                last_activity = time.time()   # 文字还在长=有活动，不算卡死
+                        quiet = need   # 停在阈值：下一拍继续判稳定，不必再从 0 数起
+                        if not cur and time.time() - last_activity > self.RELOAD_INTERVAL:
+                            if self._page_alive(page):
+                                # 容器在、文字空、页面活着：仍可能在渲染/思考。刷新会掐断，改为继续等。
+                                last_activity = time.time()
+                            else:
+                                stuck_escalate("回复容器已出现但文字始终为空，页面可能假死")
+                                text_seen, text_stable = "", 0
             if force_ceiling():
                 quiet = 0
             page.wait_for_timeout(1000)
         if expect_image:
-            self._dump_dom(page, "超时仍未抓到生成图")
+            if not dumped:
+                self._dump_dom(page, "超时仍未抓到生成图")
             raise GeminiError(
                 f"等了 {timeout}s 图片仍未生成完成（可能额度用尽或排队），请到 Chrome 里确认。"
                 "若 Chrome 里其实已经出图却抓不到，多半是 Gemini 网页版式变了——"
                 "已在 logs/ 存了页面快照，发给开发者可精准修复选择器。")
+        # 文本：走到这里=超时仍没拿到"非空且非停止消息"的回复 → 抛错让 send() 自愈重试，绝不返回空/停止消息
+        final = self.last_reply_text(page).strip()
+        if self._looks_stopped(final):
+            raise GeminiError("回复被中断（你已让系统停止这条回答），已自动重试。")
+        if not final:
+            raise GeminiError(f"等了 {timeout}s 回复仍为空（网页可能假死或未真正生成），已自动重试。")
 
     # ---------- 读回复 / 下载图 ----------
 
