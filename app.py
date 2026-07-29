@@ -636,7 +636,9 @@ def _update_meta(sess_dir: str, **fields):
 
 def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: str,
                 quality: str, ratio: str, review_every: int = DEFAULT_REVIEW_EVERY,
-                ref_roles: list = None):
+                ref_roles: list = None, lang: str = "zh"):
+    # 本次会话导演"给人看"产出的语言（英文页=en）。中文母语协议不变，只切标签内容语言。
+    pe.set_output_language(lang)
     engine = get_image_engine()
     gemini_solo = (engine == "gemini" and get_gemini_selfrun())  # 选 Gemini 就只启动 Gemini
     client = None              # 导演（文字推理）client
@@ -1156,9 +1158,11 @@ def api_start():
     except (TypeError, ValueError):
         review_every = DEFAULT_REVIEW_EVERY
     review_every = max(1, min(review_every, 10))  # 夹在 1~10 张之间
+    # 页面语言：英文页面时让导演把"给人看"的产出(理解/提示词/分析)也写成英文（诉求：英文页无中文）
+    lang = "en" if request.form.get("lang", "zh") == "en" else "zh"
     threading.Thread(target=run_session,
                      args=(requirement, base_path, ref_paths, sess_dir, quality, ratio,
-                           review_every, ref_roles),
+                           review_every, ref_roles, lang),
                      daemon=True).start()
     return jsonify({"ok": True})
 

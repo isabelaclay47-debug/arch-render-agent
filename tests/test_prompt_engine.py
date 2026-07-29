@@ -93,3 +93,32 @@ def test_helper_generate_after_confirm_uses_confirmed_understanding():
     assert "两栋石材办公楼，六层，竖向开窗" in p
     assert "加行人" in p
     assert pe._BILINGUAL_OUTPUT_SPEC in p
+
+
+def test_output_language_en_appends_directive_and_keeps_chinese_tags():
+    # 英文页(lang=en)：导演产出末尾追加英文语言指令，但中文标签名保持不变（解析靠它）
+    try:
+        pe.set_output_language("en")
+        p = pe.director_system_prompt()
+        assert "OUTPUT-LANGUAGE OVERRIDE" in p   # 强制英文内容
+        assert "<理解>" in p                      # 标签名仍是中文，解析不受影响
+    finally:
+        pe.set_output_language("zh")
+
+
+def test_output_language_zh_has_no_directive():
+    # 默认中文页：不注入任何英文指令，产出保持原样
+    pe.set_output_language("zh")
+    assert "OUTPUT-LANGUAGE OVERRIDE" not in pe.director_system_prompt()
+
+
+def test_output_language_covers_all_human_facing_builders():
+    # 英文模式必须覆盖确认卡+QC+局部修改这几条会给英文用户看到的产出
+    try:
+        pe.set_output_language("en")
+        for val in (pe.clarification_answer_prompt("a"), pe.adjust_prompt("e", "n"),
+                    pe.qc_and_revise_prompt(1), pe.feedback_prompt("f"),
+                    pe.regional_understanding_prompt("x"), pe.regional_qc_message("x")):
+            assert "OUTPUT-LANGUAGE OVERRIDE" in val
+    finally:
+        pe.set_output_language("zh")

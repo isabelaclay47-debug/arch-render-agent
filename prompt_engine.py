@@ -122,6 +122,40 @@ _BILINGUAL_OUTPUT_SPEC = """请严格按以下格式输出，不要输出其他�
 </英文提示词>"""
 
 
+# ----------------------------------------------------------------------
+#  会话输出语言开关（中文母语协议不变，只切换标签"内容"给谁看）
+#  英文页面(lang=en)时：标签名保持中文（解析不变），但 <理解>/<中文提示词>/<反问>/
+#  <分析>/<结论> 等"给人看"的内容改用英文写，让英文用户看不到任何中文。
+#  <忠实度>/<下一步> 的枚举值(一致/精修…)是机器令牌，保持中文不动。
+#  并发安全：主渲染同一时刻只有一个任务（/api/start 有互斥判断）。
+# ----------------------------------------------------------------------
+_OUTPUT_LANG = "zh"
+
+
+def set_output_language(lang: str) -> None:
+    """设定导演产出中'给人看'内容的语言：'en' 用英文，其余一律中文。"""
+    global _OUTPUT_LANG
+    _OUTPUT_LANG = "en" if lang == "en" else "zh"
+
+
+_EN_OUTPUT_DIRECTIVE = """
+
+────────────────────────────────────────────
+⚠️ OUTPUT-LANGUAGE OVERRIDE (highest priority — overrides every wording instruction above)
+The architect reading your reply understands ENGLISH ONLY. In this and EVERY later reply of this conversation:
+· Keep the tag NAMES exactly as given — they are Chinese: <理解>, <中文提示词>, <英文提示词>, <反问>, <分析>, <结论>, <忠实度>, <下一步>, <精修指令>, <新提示词>. Do NOT translate or rename any tag.
+· Write ALL human-readable CONTENT inside the tags in natural, fluent English — this includes <理解>, <中文提示词> (yes: despite its name, its CONTENT must be English here), <反问>, <分析>, <结论>.
+· <忠实度> and <下一步> keep their fixed Chinese enum values (一致/轻微偏移/明显篡改 and 精修/重画) — those are machine tokens, do NOT translate them.
+· <英文提示词>/<精修指令>/<新提示词> stay English as always.
+· Output ZERO Chinese characters anywhere in human-readable content. No exceptions.
+────────────────────────────────────────────"""
+
+
+def _lang_suffix() -> str:
+    """英文会话时追加到导演各 prompt 末尾的强制语言指令；中文会话为空。"""
+    return _EN_OUTPUT_DIRECTIVE if _OUTPUT_LANG == "en" else ""
+
+
 def director_system_prompt() -> str:
     """导演对话开场：定义身份、知识、工作方式与双语输出格式。"""
     return f"""你现在是一位资深建筑可视化(ArchViz)提示词导演。我会给你：建筑师的想法（可能只有寥寥几句）、一张必须严格忠实的"原图"（底图），可能还有若干"意向图"（只借鉴氛围/材质/光线，不借鉴形体）。
@@ -148,7 +182,7 @@ def director_system_prompt() -> str:
 </反问>
 无关紧要的细节（配景密度、云形这类）自己专业判断，不要为问而问。
 
-需求明确时，{_BILINGUAL_OUTPUT_SPEC}"""
+需求明确时，{_BILINGUAL_OUTPUT_SPEC}""" + _lang_suffix()
 
 
 def clarification_answer_prompt(answers: str) -> str:
@@ -157,7 +191,7 @@ def clarification_answer_prompt(answers: str) -> str:
 
 {answers}
 
-请据此继续完成任务。如果仍有会影响出图方向的关键不明之处，可再次用 <反问>…</反问> 提问（尽量一次问清）。否则{_BILINGUAL_OUTPUT_SPEC}"""
+请据此继续完成任务。如果仍有会影响出图方向的关键不明之处，可再次用 <反问>…</反问> 提问（尽量一次问清）。否则{_BILINGUAL_OUTPUT_SPEC}""" + _lang_suffix()
 
 
 def adjust_prompt(edited_zh: str, note: str = "") -> str:
@@ -170,7 +204,7 @@ def adjust_prompt(edited_zh: str, note: str = "") -> str:
 
 请据此重新给出三段产出：更新后的<理解>要简述你如何落实他的调整；<中文提示词>在他这版基础上润色完善（保持他的意图，别擅自改回）；<英文提示词>与最终中文严格对应。如果他的调整里有会影响出图方向的关键歧义，才用 <反问>…</反问> 先问清。
 
-{_BILINGUAL_OUTPUT_SPEC}"""
+{_BILINGUAL_OUTPUT_SPEC}""" + _lang_suffix()
 
 
 def qc_and_revise_prompt(iteration: int, detail_count: int = 0) -> str:
@@ -217,7 +251,7 @@ def qc_and_revise_prompt(iteration: int, detail_count: int = 0) -> str:
 </精修指令>
 <新提示词>
 (Full English redraw prompt — only if 下一步 is 重画; otherwise leave empty)
-</新提示词>"""
+</新提示词>""" + _lang_suffix()
 
 
 def qc_image_paths(fidelity_base, output_img, ref_images=None, ref_roles=None):
@@ -245,7 +279,7 @@ def feedback_prompt(user_feedback: str) -> str:
 </中文提示词>
 <新提示词>
 (Full English next-round prompt matching the Chinese one; do not repeat the universal baseline.)
-</新提示词>"""
+</新提示词>""" + _lang_suffix()
 
 
 def translate_instruction_prompt(zh_instruction: str) -> str:
@@ -273,7 +307,7 @@ def regional_understanding_prompt(instruction: str) -> str:
 只输出：
 <理解>
 （中文，2~4 句，说清"改什么、保持什么"）
-</理解>"""
+</理解>""" + _lang_suffix()
 
 
 def regional_qc_message(instruction: str) -> str:
@@ -289,7 +323,7 @@ def regional_qc_message(instruction: str) -> str:
 </分析>
 <结论>
 （中文一句话：这次局部修改是否合格）
-</结论>"""
+</结论>""" + _lang_suffix()
 
 
 # ======================================================================

@@ -1047,6 +1047,8 @@ async function start() {
   fd.append("quality", picked("quality"));
   fd.append("ratio", picked("ratio"));
   fd.append("review_every", picked("review_every"));
+  // 页面语言：英文页时让后端导演把理解/提示词/分析也产出英文（诉求：英文页无中文）
+  fd.append("lang", localStorage.getItem("archrender.lang") === "en" ? "en" : "zh");
   // 意向图 + 逐图角色（顺序对齐；没定义就是 generic 通用参考）
   for (const f of $("refInput").files) {
     fd.append("ref_images", f);
