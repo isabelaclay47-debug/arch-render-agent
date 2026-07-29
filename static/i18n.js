@@ -661,6 +661,8 @@
     // 状态标签 + 轮次（如"迭代运行中 · 第 1 轮"）：前段走 translateCore 查表，后段拼 Round N。
     // 单串出现在 STATUS 面板(index.html 拼接 stateNames + " · 第 N 轮")，整串带数字无法进静态字典。
     [/^(.+?)\s*·\s*第\s*(\d+)\s*轮$/, m => `${translateCore(m[1])} · Round ${m[2]}`],
+    // 完成日志：桌面交付路径 + 可选超分尾注。路径本身不翻（英文会话后端已用英文文件名）。
+    [/^完成！最终图已放到桌面：(.+?)(?:（已超分\s*(.+?)\s*→\s*(.+?)）)?$/, m => `Complete! Final image saved to the desktop: ${m[1]}${m[2] ? ` (upscaled ${m[2]} → ${m[3]})` : ""}`],
     [/^第\s*(\d+)\s*轮：在上一张基础上做增量精修（省额度，不推倒重画）…$/, m => `Round ${m[1]}: applying an incremental refinement to the previous image (quota-efficient; no full redraw)…`],
     [/^第\s*(\d+)\s*轮：从原图底图重画（约 1-3 分钟）…$/, m => `Round ${m[1]}: redrawing from the base image (about 1–3 minutes)…`],
     [/^第\s*(\d+)\s*轮出图完成，对比原图检查篡改与画质…$/, m => `Round ${m[1]} image complete. Comparing it with the base image for fidelity and quality…`],
@@ -718,7 +720,7 @@
 
   const SKIP_SELECTOR = [
     "[data-i18n-skip]", "#requirement", "#clarifyText", "#promptZh", "#confirmNote",
-    "#fbText", "#editInstruction", "#understanding", "#questions", "#promptModalBody pre",
+    "#fbText", "#editInstruction", "#understanding", "#questions", "#finalPath", "#promptModalBody pre",
     ".gallery pre", ".hist-req pre", "#intent", "#understandEdit", "#zh", "#en",
     "#refineText", "input[type=file]"
   ].join(",");

@@ -109,6 +109,9 @@ RUNTIME_STRINGS = [
     "局部修改中 · 第 3 轮",
     "已暂停 · 待重试 · 第 4 轮",
     "连接 Chrome 中… · 第 1 轮",
+    # —— 完成交付日志（Image#5：桌面路径 + 超分尾注要翻；英文会话文件名已英文）——
+    "完成！最终图已放到桌面：C:\\Users\\Andy\\Desktop\\render_result_0729_1124.png",
+    "完成！最终图已放到桌面：C:\\Users\\Andy\\Desktop\\render_result_0729_1124.png（已超分 1024x1024 → 4096x4096）",
 ]
 
 

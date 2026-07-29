@@ -336,7 +336,7 @@ def _enhance_to(src: str, dst: str, quality: str, dewm: bool, logfn=None):
     return result
 
 
-def _deliver_final(sess_dir: str):
+def _deliver_final(sess_dir: str, lang: str = "zh"):
     """任务收尾：取最后一张成图 → 按当前画质档位增强一份到会话目录（页面可见）→
     再把增强版复制到桌面。state=done 并把增强信息写进 S，供完成卡在**页面上**展示大图。
     对应用户诉求：画质增强要在页面上真能看到，而不是只落一个桌面文件。"""
@@ -360,8 +360,10 @@ def _deliver_final(sess_dir: str):
                         "quality": q}
         for s in info.get("skipped", []):
             log(f"（画质增强跳过：{s}）")
+    # 英文会话用英文文件名（落盘真名，非仅显示）——否则英文页出现中文文件名，且译显示会与真名不符
+    stem = "render_result" if lang == "en" else "渲染结果"
     out = os.path.join(desktop_path(),
-                       f"渲染结果_{datetime.now().strftime('%m%d_%H%M')}.png")
+                       f"{stem}_{datetime.now().strftime('%m%d_%H%M')}.png")
     shutil.copyfile(deliver_src, out)
     with _lock:
         S["state"] = "done"
@@ -1051,13 +1053,13 @@ def run_session(requirement: str, base_image: str, ref_images: list, sess_dir: s
                 break
 
         # 输出最终图到桌面（按画质档位增强，并在页面完成卡上展示增强版大图）
-        _deliver_final(sess_dir)
+        _deliver_final(sess_dir, lang)
 
     except GenCancelled:
         # 「提前结束」正好卡在文本推理阶段（没被 run_step_with_recovery 兜住）：
         # 不算错误——有成品就输出最后一张，没有就干净收尾（#6b）。
         try:
-            _deliver_final(sess_dir)
+            _deliver_final(sess_dir, lang)
             log("已提前结束（放弃了正在生成的那张，已交付此前完成的最后一张）。")
         except ChatGPTError:
             with _lock:
