@@ -111,6 +111,7 @@
     "🗑 回收站": "🗑 Recycle bin",
     "🖌 局部修改在哪？": "🖌 Where are local edits?",
     "任务跑起来后，右侧每张过程图下方都有「圈选局部修改这张图」按钮——": "Once a task is running, each process image on the right has a “Mark a region for local edits” button.",
+    "任务跑起来后，右侧每张过程图下方都有「圈选局部修改这张图」按钮——在每 5 轮点评暂停时点开，用画笔或框选标红要改的部位，AI 只改圈内、不动周边。": "Once a task is running, each process image on the right has a “Mark a region for local edits” button. Open it during a review pause, then use the brush or box-select to mark the parts you want changed — the AI edits only inside your selection and leaves everything around it untouched.",
     "任务跑起来后，右侧每张过程图下方都有「圈选局部修改这张图」按钮—— 在": "Once a task is running, each process image on the right has a “Mark a region for local edits” button. Open it",
     "每 5 轮点评暂停": "review pause",
     "时点开，用画笔或框选标红要改的部位，": "Open it during a review pause and mark the area to change with the brush or selection tools.",
@@ -657,6 +658,9 @@
     [/^已选中该材质「(.+)」。到点评阶段点某张图的「🖌 圈选局部修改」，用钢笔\/套索圈出区域后提交，即按此材质替换（区域外不动）。$/, m => `Material “${m[1]}” selected. During a review pause, choose “🖌 Mark a region for local edits,” mark the area with the pen or lasso, then submit. The material will be replaced only inside that region.`],
     [/^发现新版本（当前 v(.+)，落后\s*(\d+)\s*次提交）。$/, m => `A new version is available (current v${m[1]}, ${m[2]} commits behind).`],
     [/^·\s*第\s*(\d+)\s*轮$/, m => `· Round ${m[1]}`],
+    // 状态标签 + 轮次（如"迭代运行中 · 第 1 轮"）：前段走 translateCore 查表，后段拼 Round N。
+    // 单串出现在 STATUS 面板(index.html 拼接 stateNames + " · 第 N 轮")，整串带数字无法进静态字典。
+    [/^(.+?)\s*·\s*第\s*(\d+)\s*轮$/, m => `${translateCore(m[1])} · Round ${m[2]}`],
     [/^第\s*(\d+)\s*轮：在上一张基础上做增量精修（省额度，不推倒重画）…$/, m => `Round ${m[1]}: applying an incremental refinement to the previous image (quota-efficient; no full redraw)…`],
     [/^第\s*(\d+)\s*轮：从原图底图重画（约 1-3 分钟）…$/, m => `Round ${m[1]}: redrawing from the base image (about 1–3 minutes)…`],
     [/^第\s*(\d+)\s*轮出图完成，对比原图检查篡改与画质…$/, m => `Round ${m[1]} image complete. Comparing it with the base image for fidelity and quality…`],
@@ -763,6 +767,13 @@
     return !!(el && el.closest && (el.closest("script,style,noscript,template") || el.closest(SKIP_SELECTOR)));
   }
 
+  // 属性(placeholder/title/aria-label/alt)永远是作者写死的界面文案，不是用户输入或 AI 正文，
+  // 所以即便元素在 SKIP_SELECTOR（那是为保护 #requirement/#promptZh 等里的正文而设）里，
+  // 其静态属性仍应照常翻译。这里只尊重硬跳过容器与显式的 [data-i18n-skip] 退出。
+  function skippedForAttrs(el) {
+    return !!(el && el.closest && (el.closest("script,style,noscript,template") || el.closest("[data-i18n-skip]")));
+  }
+
   function translateTextNode(node) {
     if (!node || node.nodeType !== 3 || skipped(node)) return;
     const current = node.nodeValue || "";
@@ -779,7 +790,7 @@
   }
 
   function translateAttrs(el) {
-    if (!el || el.nodeType !== 1 || skipped(el)) return;
+    if (!el || el.nodeType !== 1 || skippedForAttrs(el)) return;
     const sources = attrSources.get(el) || {};
     for (const attr of ATTRS) {
       if (!el.hasAttribute(attr)) continue;

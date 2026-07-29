@@ -93,3 +93,18 @@ def test_flask_serves_both_pages_and_the_language_asset():
     script = client.get("/static/i18n.js")
     assert script.status_code == 200
     assert b"archrender.lang" in script.data
+
+
+def test_static_attrs_are_translated_even_on_content_protected_fields():
+    """placeholder/title/aria-label/alt 是作者写死的界面文案，绝非用户输入。
+    即便元素在 SKIP_SELECTOR（保护 #requirement/#confirmNote 等正文）里，其静态属性仍须翻译。
+    锁死：属性翻译走 skippedForAttrs（只认硬跳过容器 + [data-i18n-skip]），不受 id 名单管辖。"""
+    js = (ROOT / "static" / "i18n.js").read_text(encoding="utf-8")
+    assert "function skippedForAttrs" in js, "缺少只管属性的跳过判断"
+    # 属性跳过判断不得引用 SKIP_SELECTOR（那是给正文用的 id 名单）
+    body = js.split("function skippedForAttrs", 1)[1].split("}", 1)[0]
+    assert "SKIP_SELECTOR" not in body, "skippedForAttrs 不应受 id 名单管辖"
+    # translateAttrs 必须用 skippedForAttrs 而非会拦下 placeholder 的 skipped
+    attrs_fn = js.split("function translateAttrs", 1)[1].split("function ", 1)[0]
+    assert "skippedForAttrs(el)" in attrs_fn, "translateAttrs 必须用 skippedForAttrs"
+    assert "skipped(el)" not in attrs_fn, "translateAttrs 不能再用会拦下静态属性的 skipped"
